@@ -661,7 +661,9 @@ export default function ProcurementApp() {
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-    Array.from(e.dataTransfer.files).filter(f => f.type === 'application/pdf').forEach(processUpload);
+    Array.from(e.dataTransfer.files)
+      .filter(f => f.type === 'application/pdf' || f.name.match(/\.(xlsx|xls)$/i))
+      .forEach(processUpload);
   };
 
   const handleFileInput = (e) => {
@@ -823,7 +825,7 @@ export default function ProcurementApp() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf"
+                accept=".pdf,.xlsx,.xls"
                 multiple
                 onChange={handleFileInput}
                 className="hidden"
@@ -838,7 +840,7 @@ export default function ProcurementApp() {
                 Browse Files
               </div>
               <div className="mt-4 text-xs text-slate-500">
-                PDF files only &bull; Destination: <span className="text-slate-400">gs://{cloudConfig.bucketName}/{docTypes.find(d => d.id === cloudDocType)?.folder}</span>
+                PDF or Excel (.xlsx) &bull; Destination: <span className="text-slate-400">gs://{cloudConfig.bucketName}/{docTypes.find(d => d.id === cloudDocType)?.folder}</span>
               </div>
             </div>
           </div>
@@ -980,7 +982,7 @@ export default function ProcurementApp() {
                 <Building2 className="w-5 h-5 text-white" />
               </div>
               <div>
-                <div className="font-bold text-white text-lg">ACCO Procurement</div>
+                <div className="font-bold text-white text-lg">PM COST CONTROL ANALYST</div>
                 <div className="text-xs text-slate-400">Quote Comparison System &mdash; UC #88</div>
               </div>
             </div>
