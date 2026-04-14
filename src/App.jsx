@@ -84,15 +84,39 @@ export default function ProcurementApp() {
       ]);
       if (invRes.ok) {
         const data = await invRes.json();
-        if (data.length > 0) setInvoices(data);
+        if (data.length > 0) setInvoices(data.map(inv => ({
+          ...inv,
+          total: parseFloat(inv.total || 0),
+          lineItems: (Array.isArray(inv.lineItems) ? inv.lineItems : []).map(li => ({
+            ...li,
+            qtyOrdered: parseInt(li.qtyOrdered || li.qtyShipped || 0),
+            qtyShipped: parseInt(li.qtyShipped || 0),
+            unitPrice:  parseFloat(li.unitPrice || 0),
+            amount:     parseFloat(li.amount || 0),
+          })),
+        })));
       }
       if (qRes.ok) {
         const data = await qRes.json();
-        if (data.length > 0) setQuotes(data);
+        if (data.length > 0) setQuotes(data.map(q => ({
+          ...q,
+          total: parseFloat(q.total || 0),
+          lineItems: (Array.isArray(q.lineItems) ? q.lineItems : []).map(li => ({
+            ...li,
+            qty:      parseInt(li.qty || 0),
+            netPrice: parseFloat(li.netPrice || 0),
+            total:    parseFloat(li.total || 0),
+          })),
+        })));
       }
       if (cmpRes.ok) {
         const data = await cmpRes.json();
-        if (data.length > 0) setComparisonData(data);
+        if (data.length > 0) setComparisonData(data.map(item => ({
+          ...item,
+          quotedPrice:  parseFloat(item.quotedPrice || 0),
+          invoicePrice: item.invoicePrice != null ? parseFloat(item.invoicePrice) : null,
+          variance:     item.variance != null ? parseFloat(item.variance) : null,
+        })));
       }
     } catch (e) {
       console.warn('Live data fetch failed, using sample data:', e.message);
