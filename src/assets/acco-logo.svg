@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 60" width="220" height="60">
+  <!-- Blue circle -->
+  <circle cx="30" cy="30" r="30" fill="#1e4d8c"/>
+  <!-- "acco" text in white inside circle -->
+  <text x="30" y="35" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="white" text-anchor="middle" letter-spacing="1">acco</text>
+  <!-- "engineered" text -->
+  <text x="72" y="26" font-family="Arial, sans-serif" font-size="13" font-weight="400" fill="#333333" text-anchor="start">engineered</text>
+  <!-- "systems" text -->
+  <text x="72" y="42" font-family="Arial, sans-serif" font-size="13" font-weight="400" fill="#333333" text-anchor="start">systems</text>
+</svg>

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import accoLogo from './assets/acco-logo.svg';
 import {
   FileText, Upload, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
   Search, ChevronDown, ChevronRight, DollarSign, Package,
@@ -977,11 +978,9 @@ export default function ProcurementApp() {
       <header className="bg-slate-900/80 backdrop-blur-xl border-b border-slate-700/50 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-                <Building2 className="w-5 h-5 text-white" />
-              </div>
-              <div>
+            <div className="flex items-center gap-4">
+              <img src={accoLogo} alt="ACCO Engineered Systems" className="h-9 w-auto brightness-0 invert" />
+              <div className="border-l border-slate-600 pl-4">
                 <div className="font-bold text-white text-lg">PM COST CONTROL ANALYST</div>
                 <div className="text-xs text-slate-400">Quote Comparison System &mdash; UC #88</div>
               </div>
