@@ -107,7 +107,7 @@ export default function ProcurementApp() {
     }
   }, [cloudConfig.apiEndpoint, fetchLiveData]);
 
-  const totalInvoiceAmount = invoices.reduce((sum, inv) => sum + inv.total, 0);
+  const totalInvoiceAmount = invoices.reduce((sum, inv) => sum + parseFloat(inv.total || 0), 0);
   const pendingApprovals = invoices.filter(inv => inv.status === 'PENDING_APPROVAL').length;
   const overQuoteItems = comparisonData.filter(c => c.status === 'OVER_QUOTE').length;
   const uniqueItems = new Set(quotes.flatMap(q => q.lineItems.map(li => li.itemNumber))).size;
@@ -204,8 +204,8 @@ export default function ProcurementApp() {
                   <div className="text-xs text-slate-400">PO: {inv.poNumber} &bull; {inv.invoiceDate}</div>
                 </div>
                 <div className="text-right">
-                  <div className={`font-semibold ${inv.total < 0 ? 'text-purple-400' : 'text-white'}`}>
-                    ${inv.total.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  <div className={`font-semibold ${parseFloat(inv.total) < 0 ? 'text-purple-400' : 'text-white'}`}>
+                    ${parseFloat(inv.total || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                   </div>
                   <StatusBadge status={inv.status} />
                 </div>
@@ -375,8 +375,8 @@ export default function ProcurementApp() {
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="text-right">
-                    <div className={`text-lg font-bold ${inv.total < 0 ? 'text-purple-400' : 'text-white'}`}>
-                      ${inv.total.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    <div className={`text-lg font-bold ${parseFloat(inv.total) < 0 ? 'text-purple-400' : 'text-white'}`}>
+                      ${parseFloat(inv.total || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </div>
                     <div className="text-xs text-slate-400">{inv.lineItems.length} line items</div>
                   </div>
@@ -491,7 +491,7 @@ export default function ProcurementApp() {
       acc[key].invoiceCount++;
       acc[key].lineCount += inv.lineItems.length;
       acc[key].totalQty += inv.lineItems.reduce((sum, li) => sum + li.qtyShipped, 0);
-      acc[key].totalAmount += inv.total;
+      acc[key].totalAmount += parseFloat(inv.total || 0);
       acc[key].jobs.add(inv.jobNumber);
       return acc;
     }, {});
