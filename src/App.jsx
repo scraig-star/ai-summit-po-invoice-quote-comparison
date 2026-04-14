@@ -63,7 +63,7 @@ export default function ProcurementApp() {
   const [cloudConfig, setCloudConfig] = useState({
     bucketName: 'agent-space-466318-procurement-docs',
     bigQueryDataset: 'agent-space-466318:procurement',
-    apiEndpoint: '',
+    apiEndpoint: 'https://procurement-api-131631609347.us-west1.run.app',
     showSettings: false,
   });
   const [connectionStatus, setConnectionStatus] = useState({ gcs: null, bq: null, testing: false });
