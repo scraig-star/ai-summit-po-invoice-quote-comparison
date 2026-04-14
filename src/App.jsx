@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   FileText, Upload, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
   Search, ChevronDown, ChevronRight, DollarSign, Package,
@@ -36,7 +36,7 @@ const initialInvoices = [
   { id: 'INV007', invoiceNumber: 'CM736456', invoiceDate: '2026-04-08', vendor: 'Ferguson Enterprises', poNumber: 'OJ-230751', jobNumber: '01-A1-02-01-CHW', total: -574.75, status: 'CREDIT', lineItems: [{ itemNumber: 'N27NC4517250MMB', description: '10 SDR17 3PC SEG 45 ELL - CREDIT', qtyOrdered: 2, qtyShipped: 2, unitPrice: 287.375, uom: 'EA', amount: -574.75 }] },
 ];
 
-const comparisonData = [
+const initialComparisonData = [
   { itemNumber: 'FNWCSG2Z381', description: '3/8X1 HHCS GR 2 ZN 25PK', vendor: 'Ferguson', uom: 'PK', quoteNumber: 'B818577', quotedPrice: 3.940, invoiceNumber: '-', invoicePrice: null, variance: null, status: 'NOT_INVOICED' },
   { itemNumber: 'FNWHNG2Z38', description: '3/8 HEX NUT ZN A563 GR 2', vendor: 'Ferguson', uom: 'PK', quoteNumber: 'B818577', quotedPrice: 2.842, invoiceNumber: '-', invoicePrice: null, variance: null, status: 'NOT_INVOICED' },
   { itemNumber: 'MAQ17861C', description: '1/2 BV W/ ACC', vendor: 'Ferguson', uom: 'EA', quoteNumber: 'B818577', quotedPrice: 76.958, invoiceNumber: '-', invoicePrice: null, variance: null, status: 'NOT_INVOICED' },
@@ -50,8 +50,10 @@ const comparisonData = [
 // ============================================================================
 export default function ProcurementApp() {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [quotes] = useState(initialQuotes);
-  const [invoices] = useState(initialInvoices);
+  const [quotes, setQuotes] = useState(initialQuotes);
+  const [invoices, setInvoices] = useState(initialInvoices);
+  const [comparisonData, setComparisonData] = useState(initialComparisonData);
+  const [dataLoading, setDataLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -69,6 +71,41 @@ export default function ProcurementApp() {
   const [isDragging, setIsDragging] = useState(false);
   const [cloudDocType, setCloudDocType] = useState('invoice');
   const fileInputRef = useRef(null);
+
+  // Fetch live data from backend when API endpoint is configured
+  const fetchLiveData = useCallback(async (endpoint) => {
+    if (!endpoint?.trim()) return;
+    setDataLoading(true);
+    try {
+      const [invRes, qRes, cmpRes] = await Promise.all([
+        fetch(`${endpoint}/api/invoices`),
+        fetch(`${endpoint}/api/quotes`),
+        fetch(`${endpoint}/api/comparison`),
+      ]);
+      if (invRes.ok) {
+        const data = await invRes.json();
+        if (data.length > 0) setInvoices(data);
+      }
+      if (qRes.ok) {
+        const data = await qRes.json();
+        if (data.length > 0) setQuotes(data);
+      }
+      if (cmpRes.ok) {
+        const data = await cmpRes.json();
+        if (data.length > 0) setComparisonData(data);
+      }
+    } catch (e) {
+      console.warn('Live data fetch failed, using sample data:', e.message);
+    } finally {
+      setDataLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (cloudConfig.apiEndpoint?.trim()) {
+      fetchLiveData(cloudConfig.apiEndpoint);
+    }
+  }, [cloudConfig.apiEndpoint, fetchLiveData]);
 
   const totalInvoiceAmount = invoices.reduce((sum, inv) => sum + inv.total, 0);
   const pendingApprovals = invoices.filter(inv => inv.status === 'PENDING_APPROVAL').length;
@@ -133,7 +170,9 @@ export default function ProcurementApp() {
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-white">Procurement Dashboard</h2>
-          <p className="text-slate-400 text-sm mt-1">Use Case #88: Quote Comparison Overview</p>
+          <p className="text-slate-400 text-sm mt-1">
+            {dataLoading ? <span className="text-blue-400">Loading live data...</span> : 'Use Case #88: Quote Comparison Overview'}
+          </p>
         </div>
         <button
           onClick={() => setShowUploadModal(true)}
@@ -583,6 +622,8 @@ export default function ProcurementApp() {
               bqSynced: result.bqSynced,
             } : item
           ));
+          // Refresh live data after successful upload
+          if (cloudConfig.apiEndpoint?.trim()) fetchLiveData(cloudConfig.apiEndpoint);
         }, 1500);
       })
       .catch(() => {
