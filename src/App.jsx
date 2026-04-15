@@ -8,7 +8,7 @@ import {
   Filter, RefreshCw
 } from 'lucide-react';
 
-const NAVY = '#003A6E';
+const NAVY = '#084C7C'; // ACCO brand blue
 const GREEN = '#7DB928';
 
 const fmt$ = (v) => `$${Math.abs(parseFloat(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
@@ -500,7 +500,7 @@ export default function ProcurementApp() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input type="text" placeholder="Search item number, description, or quote..." value={cmpSearch}
               onChange={e => setCmpSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:border-[#003A6E]" />
+              className="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:border-[#084C7C]" />
           </div>
         </div>
 
@@ -677,17 +677,17 @@ export default function ProcurementApp() {
             <div className="flex gap-2">
               {docTypes.map(dt => (
                 <button key={dt.id} onClick={() => setCloudDocType(dt.id)}
-                  className={`flex-1 px-3 py-3 rounded-xl border text-left transition-all ${cloudDocType === dt.id ? 'border-[#003A6E] bg-[#003A6E]/5' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
-                  <div className={`text-sm font-semibold ${cloudDocType === dt.id ? 'text-[#003A6E]' : 'text-gray-700'}`}>{dt.label}</div>
+                  className={`flex-1 px-3 py-3 rounded-xl border text-left transition-all ${cloudDocType === dt.id ? 'border-[#084C7C] bg-[#084C7C]/5' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                  <div className={`text-sm font-semibold ${cloudDocType === dt.id ? 'text-[#084C7C]' : 'text-gray-700'}`}>{dt.label}</div>
                   <div className="text-xs text-gray-400 mt-0.5">{dt.desc}</div>
                 </button>
               ))}
             </div>
             <div onDragOver={e => { e.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all ${isDragging ? 'border-[#003A6E] bg-[#003A6E]/5' : 'border-gray-300 bg-white hover:border-gray-400'}`}>
+              className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all ${isDragging ? 'border-[#084C7C] bg-[#084C7C]/5' : 'border-gray-300 bg-white hover:border-gray-400'}`}>
               <input ref={fileInputRef} type="file" accept=".pdf,.xlsx,.xls" multiple onChange={handleFileInput} className="hidden" />
-              <CloudUpload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? 'text-[#003A6E]' : 'text-gray-300'}`} />
+              <CloudUpload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? 'text-[#084C7C]' : 'text-gray-300'}`} />
               <div className="font-semibold text-gray-700 mb-1">{isDragging ? 'Release to upload' : 'Drag & drop files here'}</div>
               <div className="text-sm text-gray-400 mb-5">PDF invoices, quotes, or Excel (.xlsx) files</div>
               <span className="inline-flex items-center gap-2 px-5 py-2.5 text-white text-sm font-medium rounded-lg hover:opacity-90" style={{ backgroundColor: GREEN }}>
@@ -783,7 +783,7 @@ export default function ProcurementApp() {
             {tabs.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 px-5 py-4 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
-                  activeTab === tab.id ? 'border-[#7DB928] text-[#003A6E]' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  activeTab === tab.id ? 'border-[#7DB928] text-[#084C7C]' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}>
                 <tab.icon className="w-4 h-4" />
                 {tab.label}
