@@ -14,6 +14,18 @@ const GREEN = '#7DB928';
 const fmt$ = (v) => `$${Math.abs(parseFloat(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
+// Normalize raw vendor names (e.g. "FERGUSON ENTERPRISES LLC" → "Ferguson")
+const normalizeVendor = (raw) => {
+  if (!raw || raw.toLowerCase() === 'unknown') return 'Unknown';
+  const suffixes = /\b(LLC|INC\.?|CORP\.?|CO\.?|LTD\.?|ENTERPRISES?|ENTERPRISE|COMPANY|HOLDINGS?|GROUP|SUPPLY|CORPORATION|ASSOCIATES?|ASSOC\.?|INDUSTRIES)\b\.?/gi;
+  const cleaned = raw.replace(suffixes, '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return raw;
+  return cleaned.split(' ').map(w => {
+    if (w.length <= 3) return w.toUpperCase();
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(' ');
+};
+
 export default function ProcurementApp() {
   // ── Data ──────────────────────────────────────────────────────────────────────
   const [invoices, setInvoices] = useState([]);
@@ -115,12 +127,45 @@ export default function ProcurementApp() {
     return true;
   });
 
+  // Lookup map: UPPER(item_number) → comparison record (quoted price, quote#, vendor, status)
+  const compMap = comparisonData.reduce((acc, item) => {
+    if (item.itemNumber) acc[item.itemNumber.toUpperCase().trim()] = item;
+    return acc;
+  }, {});
+
+  // Vendor lookup from comparison data when invoice vendor is unknown
+  const vendorByInvoiceNum = comparisonData.reduce((acc, item) => {
+    if (item.invoiceNumber && item.vendor && item.vendor.toLowerCase() !== 'unknown') {
+      acc[item.invoiceNumber.trim()] = item.vendor;
+    }
+    return acc;
+  }, {});
+
   const poGroups = filteredInvoices.reduce((acc, inv) => {
     const key = inv.poNumber || '(No PO)';
-    if (!acc[key]) acc[key] = { poNumber: key, vendor: inv.vendor || 'Unknown', invoices: [], jobs: new Set(), totalAmount: 0 };
-    acc[key].invoices.push(inv);
+
+    // Resolve vendor from invoice → comparison data → fallback
+    const rawVendor = (inv.vendor && inv.vendor.toLowerCase() !== 'unknown')
+      ? inv.vendor
+      : (vendorByInvoiceNum[inv.invoiceNumber?.trim()] || '');
+    const displayVendor = normalizeVendor(rawVendor) || 'Unknown';
+
+    // Compute quoted total for this invoice using compMap
+    const invQuotedTotal = inv.lineItems.reduce((s, li) => {
+      const cmp = compMap[li.itemNumber?.toUpperCase().trim()];
+      return s + (cmp?.quotedPrice > 0 ? cmp.quotedPrice * (li.qtyShipped || li.qtyOrdered || 0) : 0);
+    }, 0);
+
+    if (!acc[key]) {
+      acc[key] = { poNumber: key, vendor: displayVendor, rawVendor, invoices: [], jobs: new Set(), totalAmount: 0, quotedTotal: 0 };
+    } else if (!acc[key].rawVendor && rawVendor) {
+      acc[key].rawVendor = rawVendor;
+      acc[key].vendor = displayVendor;
+    }
+    acc[key].invoices.push({ ...inv, quotedTotal: invQuotedTotal });
     if (inv.jobNumber) acc[key].jobs.add(inv.jobNumber);
     acc[key].totalAmount += parseFloat(inv.total || 0);
+    acc[key].quotedTotal += invQuotedTotal;
     return acc;
   }, {});
 
@@ -269,10 +314,10 @@ export default function ProcurementApp() {
       <div className="space-y-5">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: 'Purchase Orders', value: poList.length,         icon: ClipboardList, color: NAVY  },
+            { label: 'Purchase Orders', value: poList.length,           icon: ClipboardList, color: NAVY  },
             { label: 'Total Invoices',  value: filteredInvoices.length, icon: FileText,      color: NAVY  },
             { label: 'Invoice Amount',  value: fmt$(totalInvoiceAmount), icon: DollarSign,    color: GREEN },
-            { label: 'Over-Quote Items',value: overQuoteItems,          icon: AlertTriangle,  color: overQuoteItems > 0 ? '#DC2626' : '#16A34A' },
+            { label: 'Over-Quote Items',value: overQuoteItems,           icon: AlertTriangle, color: overQuoteItems > 0 ? '#DC2626' : '#16A34A' },
           ].map(({ label, value, icon: Icon, color }) => (
             <div key={label} className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex items-center gap-3">
               <div className="p-2 rounded-lg bg-gray-50 flex-shrink-0">
@@ -312,191 +357,101 @@ export default function ProcurementApp() {
           </div>
         )}
 
-        {poList.map(po => (
-          <div key={po.poNumber} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-            <button className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors text-left" onClick={() => togglePO(po.poNumber)}>
-              <div className="flex items-center gap-4">
-                <div className="p-2.5 rounded-lg" style={{ backgroundColor: `${NAVY}12` }}>
-                  <ClipboardList className="w-5 h-5" style={{ color: NAVY }} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold text-gray-900 text-lg">PO {po.poNumber}</span>
-                    <span className="text-sm text-gray-400">{po.invoices.length} invoice{po.invoices.length !== 1 ? 's' : ''}</span>
+        {poList.map(po => {
+          const poVariance = po.quotedTotal > 0 ? po.totalAmount - po.quotedTotal : null;
+          const poVariancePct = po.quotedTotal > 0 ? (poVariance / po.quotedTotal * 100) : null;
+
+          return (
+            <div key={po.poNumber} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+              {/* ── PO group header ── */}
+              <button className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors text-left" onClick={() => togglePO(po.poNumber)}>
+                <div className="flex items-center gap-4">
+                  <div className="p-2.5 rounded-lg flex-shrink-0" style={{ backgroundColor: `${NAVY}12` }}>
+                    <ClipboardList className="w-5 h-5" style={{ color: NAVY }} />
                   </div>
-                  <div className="text-sm text-gray-500 mt-0.5">
-                    {po.vendor}{po.jobs.size > 0 ? ` · Jobs: ${Array.from(po.jobs).join(', ')}` : ''}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="text-right">
-                  <div className={`font-bold text-xl ${po.totalAmount < 0 ? 'text-purple-600' : 'text-gray-900'}`}>
-                    {po.totalAmount < 0 ? '-' : ''}{fmt$(po.totalAmount)}
-                  </div>
-                  <div className="text-xs text-gray-400">total billed</div>
-                </div>
-                {expandedPOs.has(po.poNumber) ? <ChevronDown className="w-5 h-5 text-gray-400" /> : <ChevronRight className="w-5 h-5 text-gray-400" />}
-              </div>
-            </button>
-
-            {expandedPOs.has(po.poNumber) && (
-              <div className="border-t border-gray-100">
-                {po.invoices.map(inv => (
-                  <div key={inv.id} className="border-b border-gray-50 last:border-0">
-                    <button className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors text-left" onClick={() => toggleInv(inv.id)}>
-                      <div className="flex items-center gap-3 pl-10">
-                        <FileText className="w-4 h-4 text-gray-300 flex-shrink-0" />
-                        <span className="font-medium text-gray-800">{inv.invoiceNumber}</span>
-                        <span className="text-xs text-gray-400 hidden sm:inline">{fmtDate(inv.invoiceDate)}</span>
-                        {inv.jobNumber && <span className="text-xs text-gray-400 hidden md:inline">Job: {inv.jobNumber}</span>}
-                        <StatusBadge status={inv.status} />
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className={`font-semibold ${parseFloat(inv.total) < 0 ? 'text-purple-600' : 'text-gray-700'}`}>{fmt$(inv.total)}</span>
-                        <span className="text-xs text-gray-400">{inv.lineItems.length} items</span>
-                        {expandedInvoices.has(inv.id) ? <ChevronDown className="w-4 h-4 text-gray-300" /> : <ChevronRight className="w-4 h-4 text-gray-300" />}
-                      </div>
-                    </button>
-                    {expandedInvoices.has(inv.id) && (
-                      <div className="px-5 pb-4 pt-2 bg-gray-50 pl-20">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-200">
-                              <th className="pb-2 font-medium">Item #</th>
-                              <th className="pb-2 font-medium">Description</th>
-                              <th className="pb-2 font-medium text-center">Ord</th>
-                              <th className="pb-2 font-medium text-center">Shp</th>
-                              <th className="pb-2 font-medium">UoM</th>
-                              <th className="pb-2 font-medium text-right">Unit $</th>
-                              <th className="pb-2 font-medium text-right">Amount</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {inv.lineItems.map((li, i) => (
-                              <tr key={i} className="border-b border-gray-100 last:border-0">
-                                <td className="py-1.5 font-mono text-xs font-semibold" style={{ color: NAVY }}>{li.itemNumber}</td>
-                                <td className="py-1.5 text-gray-600 max-w-xs truncate pr-4">{li.description}</td>
-                                <td className="py-1.5 text-center text-gray-600">{li.qtyOrdered}</td>
-                                <td className="py-1.5 text-center text-gray-600">{li.qtyShipped}</td>
-                                <td className="py-1.5 text-gray-500">{li.uom}</td>
-                                <td className="py-1.5 text-right text-gray-700">${li.unitPrice.toFixed(3)}</td>
-                                <td className="py-1.5 text-right font-semibold text-gray-900">${li.amount.toFixed(2)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  // ── Invoices tab — grouped by PO / Vendor ────────────────────────────────────
-  const InvoicesTab = () => {
-    const togglePO  = (k) => setExpandedPOs(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
-    const toggleInv = (k) => setExpandedInvoices(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
-
-    // Group by "PO + vendor" key, sorted by PO then totalAmount desc
-    const groups = Object.values(poGroups).sort((a, b) => a.poNumber.localeCompare(b.poNumber));
-
-    return (
-      <div className="space-y-5">
-        <SearchPanel showJobNumber />
-
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-gray-500">
-            {groups.length} PO{groups.length !== 1 ? 's' : ''} · {filteredInvoices.length} invoice{filteredInvoices.length !== 1 ? 's' : ''} · {fmt$(totalInvoiceAmount)} total
-          </p>
-          <button onClick={() => { setCloudDocType('invoice'); setActiveTab('upload'); }}
-            className="flex items-center gap-2 px-4 py-2 text-sm text-white font-medium rounded-lg hover:opacity-90" style={{ backgroundColor: GREEN }}>
-            <Upload className="w-4 h-4" /> Upload Invoice
-          </button>
-        </div>
-
-        {filteredInvoices.length === 0 ? (
-          <div className="bg-white border border-gray-200 rounded-xl p-10 text-center shadow-sm">
-            <FileText className="w-10 h-10 text-gray-200 mx-auto mb-2" />
-            <div className="text-sm text-gray-400">No invoices found. Adjust filters or upload invoices.</div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {groups.map(po => (
-              <div key={po.poNumber} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-
-                {/* ── PO / Vendor group header ── */}
-                <button
-                  className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors text-left border-b border-gray-100"
-                  onClick={() => togglePO(po.poNumber)}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg flex-shrink-0" style={{ backgroundColor: `${NAVY}12` }}>
-                      <ClipboardList className="w-5 h-5" style={{ color: NAVY }} />
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold text-gray-900 text-lg">PO {po.poNumber}</span>
+                      <span className="text-sm text-gray-400">{po.invoices.length} invoice{po.invoices.length !== 1 ? 's' : ''}</span>
                     </div>
-                    <div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-bold text-gray-900">PO {po.poNumber}</span>
-                        <span className="text-sm text-gray-400">{po.invoices.length} invoice{po.invoices.length !== 1 ? 's' : ''}</span>
-                      </div>
-                      <div className="text-sm text-gray-500 mt-0.5">
-                        {po.vendor}{po.jobs.size > 0 ? ` · Jobs: ${Array.from(po.jobs).join(', ')}` : ''}
-                      </div>
+                    <div className="text-sm text-gray-500 mt-0.5">
+                      {po.vendor}{po.rawVendor && po.rawVendor !== po.vendor ? <span className="text-xs text-gray-400 ml-1">({po.rawVendor})</span> : ''}
+                      {po.jobs.size > 0 ? ` · Jobs: ${Array.from(po.jobs).join(', ')}` : ''}
                     </div>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <div className="text-right">
-                      <div className={`font-bold text-lg ${po.totalAmount < 0 ? 'text-purple-600' : 'text-gray-900'}`}>
-                        {po.totalAmount < 0 ? '-' : ''}{fmt$(po.totalAmount)}
-                      </div>
-                      <div className="text-xs text-gray-400">total billed</div>
-                    </div>
-                    {expandedPOs.has(po.poNumber)
-                      ? <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                      : <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />}
-                  </div>
-                </button>
+                </div>
 
-                {/* ── Invoice rows ── */}
-                {expandedPOs.has(po.poNumber) && (
-                  <div className="divide-y divide-gray-50">
-                    {po.invoices.map(inv => (
-                      <div key={inv.id}>
-                        <button
-                          className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors text-left"
-                          onClick={() => toggleInv(inv.id)}
-                        >
+                <div className="flex items-center gap-5">
+                  {/* Quoted total */}
+                  {po.quotedTotal > 0 && (
+                    <div className="text-right hidden sm:block">
+                      <div className="text-sm font-semibold text-gray-500">{fmt$(po.quotedTotal)}</div>
+                      <div className="text-xs text-gray-400">quoted</div>
+                    </div>
+                  )}
+                  {/* Invoiced total */}
+                  <div className="text-right">
+                    <div className={`font-bold text-xl ${po.totalAmount < 0 ? 'text-purple-600' : 'text-gray-900'}`}>
+                      {po.totalAmount < 0 ? '-' : ''}{fmt$(po.totalAmount)}
+                    </div>
+                    <div className="text-xs text-gray-400">invoiced</div>
+                  </div>
+                  {/* Variance */}
+                  {poVariance !== null && (
+                    <div className="text-right hidden md:block">
+                      <div className={`text-sm font-semibold ${poVariance > 0.01 ? 'text-red-600' : poVariance < -0.01 ? 'text-green-600' : 'text-gray-400'}`}>
+                        {poVariance > 0 ? '+' : ''}{fmt$(poVariance)}
+                      </div>
+                      <div className={`text-xs ${poVariance > 0.01 ? 'text-red-400' : poVariance < -0.01 ? 'text-green-400' : 'text-gray-300'}`}>
+                        {poVariancePct > 0 ? '+' : ''}{poVariancePct.toFixed(1)}%
+                      </div>
+                    </div>
+                  )}
+                  {expandedPOs.has(po.poNumber) ? <ChevronDown className="w-5 h-5 text-gray-400" /> : <ChevronRight className="w-5 h-5 text-gray-400" />}
+                </div>
+              </button>
+
+              {/* ── Invoice list ── */}
+              {expandedPOs.has(po.poNumber) && (
+                <div className="border-t border-gray-100">
+                  {po.invoices.map(inv => {
+                    const invVariance = inv.quotedTotal > 0 ? parseFloat(inv.total) - inv.quotedTotal : null;
+                    const invVariancePct = inv.quotedTotal > 0 ? (invVariance / inv.quotedTotal * 100) : null;
+
+                    return (
+                      <div key={inv.id} className="border-b border-gray-50 last:border-0">
+                        <button className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors text-left" onClick={() => toggleInv(inv.id)}>
                           <div className="flex items-center gap-3 pl-10">
                             <FileText className="w-4 h-4 text-gray-300 flex-shrink-0" />
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-medium text-gray-800">{inv.invoiceNumber}</span>
-                              <StatusBadge status={inv.status} />
-                              <span className="text-xs text-gray-400">{fmtDate(inv.invoiceDate)}</span>
-                              {inv.jobNumber && <span className="text-xs text-gray-400">Job: {inv.jobNumber}</span>}
-                            </div>
+                            <span className="font-medium text-gray-800">{inv.invoiceNumber}</span>
+                            <span className="text-xs text-gray-400 hidden sm:inline">{fmtDate(inv.invoiceDate)}</span>
+                            {inv.jobNumber && <span className="text-xs text-gray-400 hidden md:inline">Job: {inv.jobNumber}</span>}
+                            <StatusBadge status={inv.status} />
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-4">
+                            {/* Quoted total for invoice */}
+                            {inv.quotedTotal > 0 && (
+                              <div className="text-right hidden sm:block">
+                                <div className="text-xs text-gray-400">Quoted: {fmt$(inv.quotedTotal)}</div>
+                                {invVariance !== null && (
+                                  <div className={`text-xs font-medium ${invVariance > 0.01 ? 'text-red-500' : invVariance < -0.01 ? 'text-green-500' : 'text-gray-400'}`}>
+                                    {invVariance > 0 ? '+' : ''}{fmt$(invVariance)} ({invVariancePct > 0 ? '+' : ''}{invVariancePct.toFixed(1)}%)
+                                  </div>
+                                )}
+                              </div>
+                            )}
                             <div className="text-right">
-                              <span className={`font-semibold ${parseFloat(inv.total) < 0 ? 'text-purple-600' : 'text-gray-800'}`}>
-                                {fmt$(inv.total)}
-                              </span>
+                              <span className={`font-semibold ${parseFloat(inv.total) < 0 ? 'text-purple-600' : 'text-gray-700'}`}>{fmt$(inv.total)}</span>
                               <div className="text-xs text-gray-400">{inv.lineItems.length} items</div>
                             </div>
-                            {expandedInvoices.has(inv.id)
-                              ? <ChevronDown className="w-4 h-4 text-gray-300" />
-                              : <ChevronRight className="w-4 h-4 text-gray-300" />}
+                            {expandedInvoices.has(inv.id) ? <ChevronDown className="w-4 h-4 text-gray-300" /> : <ChevronRight className="w-4 h-4 text-gray-300" />}
                           </div>
                         </button>
 
                         {/* ── Line items ── */}
                         {expandedInvoices.has(inv.id) && (
-                          <div className="px-5 pb-4 pt-2 bg-gray-50 pl-20">
-                            <table className="w-full text-sm">
+                          <div className="px-5 pb-4 pt-2 bg-gray-50 pl-20 overflow-x-auto">
+                            <table className="w-full text-sm min-w-max">
                               <thead>
                                 <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-200">
                                   <th className="pb-2 font-medium">Item #</th>
@@ -504,34 +459,74 @@ export default function ProcurementApp() {
                                   <th className="pb-2 font-medium text-center">Ord</th>
                                   <th className="pb-2 font-medium text-center">Shp</th>
                                   <th className="pb-2 font-medium">UoM</th>
-                                  <th className="pb-2 font-medium text-right">Unit $</th>
+                                  <th className="pb-2 font-medium">Quote #</th>
+                                  <th className="pb-2 font-medium text-right">Invoice $</th>
+                                  <th className="pb-2 font-medium text-right">Quoted $</th>
+                                  <th className="pb-2 font-medium text-right">Item Var</th>
                                   <th className="pb-2 font-medium text-right">Amount</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {inv.lineItems.map((li, i) => (
-                                  <tr key={i} className="border-b border-gray-100 last:border-0">
-                                    <td className="py-1.5 font-mono text-xs font-semibold" style={{ color: NAVY }}>{li.itemNumber}</td>
-                                    <td className="py-1.5 text-gray-600 max-w-xs truncate pr-4">{li.description}</td>
-                                    <td className="py-1.5 text-center text-gray-600">{li.qtyOrdered}</td>
-                                    <td className="py-1.5 text-center text-gray-600">{li.qtyShipped}</td>
-                                    <td className="py-1.5 text-gray-500">{li.uom}</td>
-                                    <td className="py-1.5 text-right text-gray-700">${li.unitPrice.toFixed(3)}</td>
-                                    <td className="py-1.5 text-right font-semibold text-gray-900">${li.amount.toFixed(2)}</td>
-                                  </tr>
-                                ))}
+                                {inv.lineItems.map((li, i) => {
+                                  const cmp = compMap[li.itemNumber?.toUpperCase().trim()];
+                                  const quotedPrice = cmp?.quotedPrice > 0 ? cmp.quotedPrice : null;
+                                  const invoicePrice = li.unitPrice > 0 ? li.unitPrice : null;
+                                  const variance = quotedPrice && invoicePrice
+                                    ? ((invoicePrice - quotedPrice) / quotedPrice * 100)
+                                    : null;
+                                  return (
+                                    <tr key={i} className={`border-b border-gray-100 last:border-0 ${variance > 0.1 ? 'bg-red-50/40' : variance !== null && variance < -0.1 ? 'bg-green-50/40' : ''}`}>
+                                      <td className="py-1.5 font-mono text-xs font-semibold" style={{ color: NAVY }}>{li.itemNumber}</td>
+                                      <td className="py-1.5 text-gray-600 max-w-xs truncate pr-4">{li.description}</td>
+                                      <td className="py-1.5 text-center text-gray-600">{li.qtyOrdered}</td>
+                                      <td className="py-1.5 text-center text-gray-600">{li.qtyShipped}</td>
+                                      <td className="py-1.5 text-gray-500">{li.uom}</td>
+                                      <td className="py-1.5 text-xs text-gray-400">{cmp?.quoteNumber || '—'}</td>
+                                      <td className="py-1.5 text-right text-gray-800">{invoicePrice ? `$${invoicePrice.toFixed(3)}` : '—'}</td>
+                                      <td className="py-1.5 text-right text-gray-500">{quotedPrice ? `$${quotedPrice.toFixed(3)}` : '—'}</td>
+                                      <td className={`py-1.5 text-right font-semibold text-xs ${variance > 0.1 ? 'text-red-600' : variance !== null && variance < -0.1 ? 'text-green-600' : variance !== null ? 'text-gray-400' : 'text-gray-300'}`}>
+                                        {variance !== null ? `${variance > 0 ? '+' : ''}${variance.toFixed(2)}%` : '—'}
+                                      </td>
+                                      <td className="py-1.5 text-right font-semibold text-gray-900">{fmt$(li.amount)}</td>
+                                    </tr>
+                                  );
+                                })}
+
+                                {/* Totals row */}
+                                {(() => {
+                                  const quotedT = inv.quotedTotal;
+                                  const invoicedT = parseFloat(inv.total);
+                                  const varT = quotedT > 0 ? invoicedT - quotedT : null;
+                                  const varTpct = quotedT > 0 ? (varT / quotedT * 100) : null;
+                                  return (
+                                    <tr className="border-t-2 border-gray-200 bg-gray-100/60 font-semibold">
+                                      <td colSpan={6} className="pt-2 pb-1.5 text-xs text-gray-500 uppercase tracking-wide">Totals</td>
+                                      <td className="pt-2 pb-1.5 text-right text-xs text-gray-400">—</td>
+                                      <td className="pt-2 pb-1.5 text-right text-gray-600 text-xs">{quotedT > 0 ? fmt$(quotedT) : '—'}</td>
+                                      <td className={`pt-2 pb-1.5 text-right text-xs font-bold ${varT > 0.01 ? 'text-red-600' : varT < -0.01 ? 'text-green-600' : 'text-gray-400'}`}>
+                                        {varT !== null ? (
+                                          <span title={`${varTpct > 0 ? '+' : ''}${varTpct.toFixed(1)}%`}>
+                                            {varT > 0 ? '+' : ''}{fmt$(varT)}{' '}
+                                            <span className="opacity-70">({varTpct > 0 ? '+' : ''}{varTpct.toFixed(1)}%)</span>
+                                          </span>
+                                        ) : '—'}
+                                      </td>
+                                      <td className="pt-2 pb-1.5 text-right text-gray-900">{fmt$(invoicedT)}</td>
+                                    </tr>
+                                  );
+                                })()}
                               </tbody>
                             </table>
                           </div>
                         )}
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -597,7 +592,7 @@ export default function ProcurementApp() {
                     <tr key={idx} className={`hover:bg-gray-50 ${item.status === 'OVER_QUOTE' ? 'bg-red-50/40' : ''}`}>
                       <td className="px-4 py-3 font-mono text-xs font-semibold" style={{ color: NAVY }}>{item.itemNumber}</td>
                       <td className="px-4 py-3 text-gray-600 max-w-xs truncate">{item.description}</td>
-                      <td className="px-4 py-3 text-gray-700">{item.vendor}</td>
+                      <td className="px-4 py-3 text-gray-700">{normalizeVendor(item.vendor)}</td>
                       <td className="px-4 py-3 text-gray-500">{item.quoteNumber}</td>
                       <td className="px-4 py-3 text-right font-medium text-gray-800">${item.quotedPrice.toFixed(3)}</td>
                       <td className="px-4 py-3 text-gray-500">{item.invoiceNumber || '—'}</td>
@@ -617,20 +612,31 @@ export default function ProcurementApp() {
     );
   };
 
-  // ── Item Catalog ──────────────────────────────────────────────────────────────
+  // ── Item Catalog — grouped by vendor → quote number ───────────────────────────
   const ItemCatalogTab = () => {
-    const allItems = quotes
-      .flatMap(q => q.lineItems.map(li => ({ ...li, bidNumber: q.bidNumber, bidDate: q.bidDate, vendor: q.vendor })))
-      .sort((a, b) => {
-        const v = (a.vendor || '').localeCompare(b.vendor || '');
-        if (v !== 0) return v;
-        return (a.bidNumber || '').localeCompare(b.bidNumber || '');
+    // Build grouped structure: normalizedVendor → quoteNumber → { items, bidDate, rawVendor }
+    const grouped = {};
+    quotes.forEach(q => {
+      const vendor = normalizeVendor(q.vendor) || 'Unknown';
+      const quoteNum = q.bidNumber || 'Unknown Quote';
+      if (!grouped[vendor]) grouped[vendor] = {};
+      if (!grouped[vendor][quoteNum]) {
+        grouped[vendor][quoteNum] = { items: [], bidDate: q.bidDate, rawVendor: q.vendor };
+      }
+      q.lineItems.forEach(li => {
+        if (
+          !itemSearch ||
+          li.itemNumber?.toLowerCase().includes(itemSearch.toLowerCase()) ||
+          li.description?.toLowerCase().includes(itemSearch.toLowerCase())
+        ) {
+          grouped[vendor][quoteNum].items.push({ ...li, bidNumber: q.bidNumber, bidDate: q.bidDate, vendor: q.vendor });
+        }
       });
-    const filtered = allItems.filter(item =>
-      !itemSearch ||
-      item.itemNumber?.toLowerCase().includes(itemSearch.toLowerCase()) ||
-      item.description?.toLowerCase().includes(itemSearch.toLowerCase())
-    );
+    });
+
+    const totalItems = quotes.reduce((s, q) => s + q.lineItems.length, 0);
+    const vendorEntries = Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b));
+
     return (
       <div className="space-y-5">
         <div className="flex items-center justify-between">
@@ -643,42 +649,71 @@ export default function ProcurementApp() {
             <Upload className="w-4 h-4" /> Upload Quote
           </button>
         </div>
-        <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-200">
-                  <th className="px-4 py-3 font-medium">Item #</th>
-                  <th className="px-4 py-3 font-medium">Vendor</th>
-                  <th className="px-4 py-3 font-medium">Quote #</th>
-                  <th className="px-4 py-3 font-medium">Date</th>
-                  <th className="px-4 py-3 font-medium">Description</th>
-                  <th className="px-4 py-3 font-medium">UoM</th>
-                  <th className="px-4 py-3 font-medium text-right">Unit Price</th>
-                  <th className="px-4 py-3 font-medium text-right">Qty</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filtered.length === 0 ? (
-                  <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">
-                    {allItems.length === 0 ? 'No items yet. Upload a quote to populate the catalog.' : 'No items match your search.'}
-                  </td></tr>
-                ) : filtered.map((item, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-mono text-xs font-semibold" style={{ color: NAVY }}>{item.itemNumber}</td>
-                    <td className="px-4 py-3 text-gray-700">{item.vendor}</td>
-                    <td className="px-4 py-3 text-gray-500">{item.bidNumber}</td>
-                    <td className="px-4 py-3 text-gray-500">{fmtDate(item.bidDate)}</td>
-                    <td className="px-4 py-3 text-gray-600 max-w-xs truncate">{item.description}</td>
-                    <td className="px-4 py-3 text-gray-500">{item.uom}</td>
-                    <td className="px-4 py-3 text-right font-semibold text-gray-900">${item.netPrice.toFixed(3)}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{item.qty}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+        {totalItems === 0 ? (
+          <div className="bg-white border border-gray-200 rounded-xl p-10 text-center shadow-sm">
+            <Package className="w-10 h-10 text-gray-200 mx-auto mb-2" />
+            <div className="text-sm text-gray-400">No items yet. Upload a quote to populate the catalog.</div>
           </div>
-        </div>
+        ) : (
+          <div className="space-y-4">
+            {vendorEntries.map(([vendor, quoteGroups]) => (
+              <div key={vendor} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                {/* Vendor header */}
+                <div className="px-5 py-3 border-b border-gray-100" style={{ backgroundColor: `${NAVY}08` }}>
+                  <span className="font-bold text-base" style={{ color: NAVY }}>{vendor}</span>
+                  {quoteGroups[Object.keys(quoteGroups)[0]]?.rawVendor && quoteGroups[Object.keys(quoteGroups)[0]].rawVendor !== vendor && (
+                    <span className="text-xs text-gray-400 ml-2">({quoteGroups[Object.keys(quoteGroups)[0]].rawVendor})</span>
+                  )}
+                  <span className="text-xs text-gray-400 ml-3">
+                    {Object.keys(quoteGroups).length} quote{Object.keys(quoteGroups).length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+
+                {/* Quote groups */}
+                {Object.entries(quoteGroups).sort(([a], [b]) => a.localeCompare(b)).map(([quoteNum, data]) => (
+                  <div key={quoteNum} className="border-b border-gray-50 last:border-0">
+                    {/* Quote subheader */}
+                    <div className="px-5 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-4">
+                      <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Quote #{quoteNum}</span>
+                      {data.bidDate && <span className="text-xs text-gray-400">{fmtDate(data.bidDate)}</span>}
+                      <span className="text-xs text-gray-400">{data.items.length} item{data.items.length !== 1 ? 's' : ''}</span>
+                    </div>
+
+                    {data.items.length === 0 ? (
+                      <div className="px-5 py-3 text-xs text-gray-400 italic">No items match your search in this quote.</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-100">
+                              <th className="px-4 py-2 font-medium">Item #</th>
+                              <th className="px-4 py-2 font-medium">Description</th>
+                              <th className="px-4 py-2 font-medium">UoM</th>
+                              <th className="px-4 py-2 font-medium text-right">Unit Price</th>
+                              <th className="px-4 py-2 font-medium text-right">Qty</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-50">
+                            {data.items.map((item, idx) => (
+                              <tr key={idx} className="hover:bg-gray-50">
+                                <td className="px-4 py-2 font-mono text-xs font-semibold" style={{ color: NAVY }}>{item.itemNumber}</td>
+                                <td className="px-4 py-2 text-gray-600 max-w-sm truncate">{item.description}</td>
+                                <td className="px-4 py-2 text-gray-500">{item.uom}</td>
+                                <td className="px-4 py-2 text-right font-semibold text-gray-900">${item.netPrice.toFixed(3)}</td>
+                                <td className="px-4 py-2 text-right text-gray-600">{item.qty}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -697,7 +732,6 @@ export default function ProcurementApp() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         setResult({ ok: true, data });
-        // Reset local state
         setInvoices([]);
         setQuotes([]);
         setComparisonData([]);
@@ -748,9 +782,9 @@ export default function ProcurementApp() {
   // ── Upload tab ────────────────────────────────────────────────────────────────
   const UploadTab = () => {
     const docTypes = [
-      { id: 'invoice', label: 'Invoice',         desc: 'PDF or Excel invoices from vendors' },
-      { id: 'quote',   label: 'Quote / Bid',      desc: 'Vendor price quotes for comparison' },
-      { id: 'po',      label: 'Purchase Order',   desc: 'PO documents for reference' },
+      { id: 'invoice', label: 'Invoice',        desc: 'PDF or Excel invoices from vendors' },
+      { id: 'quote',   label: 'Quote / Bid',     desc: 'Vendor price quotes for comparison' },
+      { id: 'po',      label: 'Purchase Order',  desc: 'PO documents for reference' },
     ];
     const statusIcon = (s) => {
       if (s === 'uploading')  return <Loader className="w-4 h-4 text-blue-500 animate-spin" />;
@@ -772,8 +806,8 @@ export default function ProcurementApp() {
         <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center gap-5 flex-wrap">
             {[
-              { label: 'GCS', icon: Cloud,     key: 'gcs' },
-              { label: 'DB',  icon: Database,  key: 'bq'  },
+              { label: 'GCS', icon: Cloud,    key: 'gcs' },
+              { label: 'DB',  icon: Database, key: 'bq'  },
             ].map(({ label, icon: Icon, key }) => (
               <div key={key} className="flex items-center gap-2 text-sm text-gray-500">
                 <Icon className="w-4 h-4 text-gray-400" />
@@ -846,7 +880,6 @@ export default function ProcurementApp() {
           </div>
         </div>
 
-        {/* ── Data management ── */}
         <ClearDataPanel />
 
         {uploadQueue.length > 0 && (
@@ -880,11 +913,10 @@ export default function ProcurementApp() {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const tabs = [
-    { id: 'po-overview', label: 'PO Overview',        icon: ClipboardList },
-    { id: 'invoices',    label: 'Invoices',            icon: FileText      },
-    { id: 'comparison',  label: 'Quote vs Invoice',    icon: TrendingUp    },
-    { id: 'catalog',     label: 'Item Catalog',        icon: Package       },
-    { id: 'upload',      label: 'Upload Documents',    icon: CloudUpload   },
+    { id: 'po-overview', label: 'PO Overview',     icon: ClipboardList },
+    { id: 'comparison',  label: 'Quote vs Invoice', icon: TrendingUp    },
+    { id: 'catalog',     label: 'Item Catalog',     icon: Package       },
+    { id: 'upload',      label: 'Upload Documents', icon: CloudUpload   },
   ];
 
   return (
@@ -932,7 +964,6 @@ export default function ProcurementApp() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {activeTab === 'po-overview' && <POOverview />}
-        {activeTab === 'invoices'    && <InvoicesTab />}
         {activeTab === 'comparison'  && <ComparisonTab />}
         {activeTab === 'catalog'     && <ItemCatalogTab />}
         {activeTab === 'upload'      && <UploadTab />}
