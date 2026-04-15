@@ -254,15 +254,23 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
     let skipped  = false;
 
     if (docType === 'invoice') {
-      // Dedup: skip if this filename was already saved
+      // Dedup: skip only if the existing record already has line items.
+      // If the previous upload left an empty record, delete it and re-insert.
       const dup = await client.query(
-        `SELECT invoice_id FROM invoices WHERE source_filename = $1 LIMIT 1`,
+        `SELECT i.invoice_id,
+                (SELECT COUNT(*) FROM invoice_line_items WHERE invoice_id = i.invoice_id) AS item_count
+         FROM invoices i WHERE i.source_filename = $1 LIMIT 1`,
         [trunc(fileName)]
       );
-      if (dup.rows.length > 0) {
+      if (dup.rows.length > 0 && parseInt(dup.rows[0].item_count) > 0) {
         recordId = dup.rows[0].invoice_id;
         skipped  = true;
-      } else {
+      } else if (dup.rows.length > 0) {
+        // Empty record from a failed prior upload — delete and re-insert
+        await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [dup.rows[0].invoice_id]);
+        await client.query('DELETE FROM invoices WHERE invoice_id = $1', [dup.rows[0].invoice_id]);
+      }
+      if (!skipped) {
         const { rows } = await client.query(
           `INSERT INTO invoices
              (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, status)
@@ -293,15 +301,22 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
       }
 
     } else if (docType === 'quote') {
-      // Dedup: skip if this filename was already saved
+      // Dedup: skip only if existing record already has line items
       const dup = await client.query(
-        `SELECT quote_id FROM quotes WHERE source_filename = $1 LIMIT 1`,
+        `SELECT q.quote_id,
+                (SELECT COUNT(*) FROM quote_line_items WHERE quote_id = q.quote_id) AS item_count
+         FROM quotes q WHERE q.source_filename = $1 LIMIT 1`,
         [trunc(fileName)]
       );
-      if (dup.rows.length > 0) {
+      if (dup.rows.length > 0 && parseInt(dup.rows[0].item_count) > 0) {
         recordId = dup.rows[0].quote_id;
         skipped  = true;
-      } else {
+      } else if (dup.rows.length > 0) {
+        // Empty record — delete and re-insert
+        await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [dup.rows[0].quote_id]);
+        await client.query('DELETE FROM quotes WHERE quote_id = $1', [dup.rows[0].quote_id]);
+      }
+      if (!skipped) {
         const { rows } = await client.query(
           `INSERT INTO quotes
              (bid_number, bid_date, net_total, total_amount, source_filename, status)
