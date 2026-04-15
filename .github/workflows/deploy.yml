@@ -56,9 +56,9 @@ jobs:
             DB_NAME=procurement
             DB_USER=procurement_admin
             DOCAI_LOCATION=us
-            DOCAI_PROCESSOR_ID=e5a00e6b11139353
           secrets: |
             DB_PASSWORD=procurement-db-password:latest
+            DOCAI_PROCESSOR_ID=docai-processor-id:latest
 
   deploy-frontend:
     name: Build and Deploy Frontend
