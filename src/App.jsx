@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import accoLogo from './assets/acco-logo.jpg';
+import accoLogo from './assets/acco-logo.png';
 import {
   FileText, Upload, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
   Search, ChevronDown, ChevronRight, DollarSign, Package,
@@ -23,7 +23,7 @@ export default function ProcurementApp() {
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // ── Filters ───────────────────────────────────────────────────────────────────
-  const [filters, setFilters] = useState({ vendor: '', poNumber: '', jobNumber: '', dateFrom: '', dateTo: '' });
+  const [filters, setFilters] = useState({ vendor: '', poNumber: '', invoiceNumber: '', jobNumber: '', dateFrom: '', dateTo: '' });
   const [activeFilters, setActiveFilters] = useState({});
   const [itemSearch, setItemSearch] = useState('');
 
@@ -106,11 +106,12 @@ export default function ProcurementApp() {
 
   // ── Derived data ──────────────────────────────────────────────────────────────
   const filteredInvoices = invoices.filter(inv => {
-    if (activeFilters.vendor    && !inv.vendor?.toLowerCase().includes(activeFilters.vendor.toLowerCase()))       return false;
-    if (activeFilters.poNumber  && !inv.poNumber?.toLowerCase().includes(activeFilters.poNumber.toLowerCase()))   return false;
-    if (activeFilters.jobNumber && !inv.jobNumber?.toLowerCase().includes(activeFilters.jobNumber.toLowerCase())) return false;
-    if (activeFilters.dateFrom  && inv.invoiceDate < activeFilters.dateFrom) return false;
-    if (activeFilters.dateTo    && inv.invoiceDate > activeFilters.dateTo)   return false;
+    if (activeFilters.vendor         && !inv.vendor?.toLowerCase().includes(activeFilters.vendor.toLowerCase()))               return false;
+    if (activeFilters.poNumber       && !inv.poNumber?.toLowerCase().includes(activeFilters.poNumber.toLowerCase()))           return false;
+    if (activeFilters.invoiceNumber  && !inv.invoiceNumber?.toLowerCase().includes(activeFilters.invoiceNumber.toLowerCase())) return false;
+    if (activeFilters.jobNumber      && !inv.jobNumber?.toLowerCase().includes(activeFilters.jobNumber.toLowerCase()))         return false;
+    if (activeFilters.dateFrom       && inv.invoiceDate < activeFilters.dateFrom) return false;
+    if (activeFilters.dateTo         && inv.invoiceDate > activeFilters.dateTo)   return false;
     return true;
   });
 
@@ -128,7 +129,7 @@ export default function ProcurementApp() {
   const hasActiveFilters = Object.values(activeFilters).some(v => v);
 
   const applyFilters = () => setActiveFilters({ ...filters });
-  const clearFilters = () => { setFilters({ vendor: '', poNumber: '', jobNumber: '', dateFrom: '', dateTo: '' }); setActiveFilters({}); };
+  const clearFilters = () => { setFilters({ vendor: '', poNumber: '', invoiceNumber: '', jobNumber: '', dateFrom: '', dateTo: '' }); setActiveFilters({}); };
 
   // ── Upload handlers ───────────────────────────────────────────────────────────
   const handleTestConnection = async () => {
@@ -220,13 +221,14 @@ export default function ProcurementApp() {
           </button>
         )}
       </div>
-      <div className={`grid gap-3 ${showJobNumber ? 'grid-cols-2 md:grid-cols-5' : 'grid-cols-2 md:grid-cols-4'}`}>
+      <div className={`grid gap-3 ${showJobNumber ? 'grid-cols-2 md:grid-cols-6' : 'grid-cols-2 md:grid-cols-5'}`}>
         {[
-          { key: 'vendor',    label: 'Vendor',     placeholder: 'e.g. Ferguson' },
-          { key: 'poNumber',  label: 'PO Number',  placeholder: 'e.g. 229902' },
+          { key: 'vendor',        label: 'Vendor',        placeholder: 'e.g. Ferguson' },
+          { key: 'poNumber',      label: 'PO Number',     placeholder: 'e.g. 229902' },
+          { key: 'invoiceNumber', label: 'Invoice #',     placeholder: 'e.g. 5892077' },
           ...(showJobNumber ? [{ key: 'jobNumber', label: 'Job Number', placeholder: 'e.g. 60140018' }] : []),
-          { key: 'dateFrom',  label: 'Date From',  type: 'date' },
-          { key: 'dateTo',    label: 'Date To',    type: 'date' },
+          { key: 'dateFrom',      label: 'Date From',     type: 'date' },
+          { key: 'dateTo',        label: 'Date To',       type: 'date' },
         ].map(({ key, label, placeholder, type = 'text' }) => (
           <div key={key}>
             <label className="block text-xs font-medium text-gray-500 mb-1">{label}</label>
