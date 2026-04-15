@@ -574,14 +574,24 @@ export default function ProcurementApp() {
   // ============================================================================
   const handleTestConnection = async () => {
     setConnectionStatus({ gcs: null, bq: null, testing: true });
-    // Simulate connection test — in production this calls the backend health endpoint
-    await new Promise(r => setTimeout(r, 1200));
-    const hasEndpoint = cloudConfig.apiEndpoint.trim().length > 0;
-    setConnectionStatus({
-      gcs: hasEndpoint ? 'connected' : 'demo',
-      bq: hasEndpoint ? 'connected' : 'demo',
-      testing: false,
-    });
+    const endpoint = cloudConfig.apiEndpoint.trim();
+    if (!endpoint) {
+      setConnectionStatus({ gcs: 'demo', bq: 'demo', testing: false });
+      return;
+    }
+    try {
+      const res = await fetch(`${endpoint}/health`);
+      const data = await res.json();
+      setConnectionStatus({
+        gcs: data.checks?.gcs === 'connected' ? 'connected' : 'error',
+        bq:  data.checks?.db  === 'connected' ? 'connected' : 'error',
+        testing: false,
+        detail: data,
+      });
+    } catch (err) {
+      console.error('Connection test failed:', err);
+      setConnectionStatus({ gcs: 'error', bq: 'error', testing: false, detail: err.message });
+    }
   };
 
   const processUpload = (file) => {
@@ -616,7 +626,10 @@ export default function ProcurementApp() {
         formData.append('bucket', cloudConfig.bucketName);
         formData.append('dataset', cloudConfig.bigQueryDataset);
         const res = await fetch(`${cloudConfig.apiEndpoint}/api/documents/upload`, { method: 'POST', body: formData });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
         return await res.json();
       } else {
         // Demo mode — simulate 2-second upload
@@ -651,10 +664,11 @@ export default function ProcurementApp() {
           if (cloudConfig.apiEndpoint?.trim()) fetchLiveData(cloudConfig.apiEndpoint);
         }, 1500);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('Upload error:', err);
         clearInterval(tick);
         setUploadQueue(prev => prev.map(item =>
-          item.id === id ? { ...item, status: 'error', progress: 0 } : item
+          item.id === id ? { ...item, status: 'error', progress: 0, errorMessage: err.message } : item
         ));
       });
   };
@@ -691,7 +705,7 @@ export default function ProcurementApp() {
       if (item.status === 'uploading') return `Uploading... ${item.progress}%`;
       if (item.status === 'processing') return 'Document AI processing...';
       if (item.status === 'complete') return item.bqSynced ? 'Synced to BigQuery' : 'Uploaded to GCS';
-      if (item.status === 'error') return 'Upload failed';
+      if (item.status === 'error') return item.errorMessage ? `Upload failed: ${item.errorMessage}` : 'Upload failed';
       return '';
     };
 
