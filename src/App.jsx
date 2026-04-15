@@ -398,70 +398,134 @@ export default function ProcurementApp() {
     );
   };
 
-  // ── Invoices tab ──────────────────────────────────────────────────────────────
+  // ── Invoices tab — grouped by PO / Vendor ────────────────────────────────────
   const InvoicesTab = () => {
+    const togglePO  = (k) => setExpandedPOs(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
     const toggleInv = (k) => setExpandedInvoices(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
+
+    // Group by "PO + vendor" key, sorted by PO then totalAmount desc
+    const groups = Object.values(poGroups).sort((a, b) => a.poNumber.localeCompare(b.poNumber));
+
     return (
       <div className="space-y-5">
         <SearchPanel showJobNumber />
+
         <div className="flex items-center justify-between">
-          <p className="text-sm text-gray-500">{filteredInvoices.length} invoices · {fmt$(totalInvoiceAmount)} total</p>
-          <button onClick={() => { setCloudDocType('invoice'); setActiveTab('upload'); }} className="flex items-center gap-2 px-4 py-2 text-sm text-white font-medium rounded-lg hover:opacity-90" style={{ backgroundColor: GREEN }}>
+          <p className="text-sm text-gray-500">
+            {groups.length} PO{groups.length !== 1 ? 's' : ''} · {filteredInvoices.length} invoice{filteredInvoices.length !== 1 ? 's' : ''} · {fmt$(totalInvoiceAmount)} total
+          </p>
+          <button onClick={() => { setCloudDocType('invoice'); setActiveTab('upload'); }}
+            className="flex items-center gap-2 px-4 py-2 text-sm text-white font-medium rounded-lg hover:opacity-90" style={{ backgroundColor: GREEN }}>
             <Upload className="w-4 h-4" /> Upload Invoice
           </button>
         </div>
+
         {filteredInvoices.length === 0 ? (
           <div className="bg-white border border-gray-200 rounded-xl p-10 text-center shadow-sm">
             <FileText className="w-10 h-10 text-gray-200 mx-auto mb-2" />
             <div className="text-sm text-gray-400">No invoices found. Adjust filters or upload invoices.</div>
           </div>
         ) : (
-          <div className="space-y-3">
-            {filteredInvoices.map(inv => (
-              <div key={inv.id} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-                <button className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors text-left" onClick={() => toggleInv(inv.id)}>
+          <div className="space-y-4">
+            {groups.map(po => (
+              <div key={po.poNumber} className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+
+                {/* ── PO / Vendor group header ── */}
+                <button
+                  className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors text-left border-b border-gray-100"
+                  onClick={() => togglePO(po.poNumber)}
+                >
                   <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-gray-100"><FileText className="w-4 h-4 text-gray-400" /></div>
+                    <div className="p-2 rounded-lg flex-shrink-0" style={{ backgroundColor: `${NAVY}12` }}>
+                      <ClipboardList className="w-5 h-5" style={{ color: NAVY }} />
+                    </div>
                     <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-gray-900">{inv.invoiceNumber}</span>
-                        <StatusBadge status={inv.status} />
+                      <div className="flex items-center gap-3">
+                        <span className="font-bold text-gray-900">PO {po.poNumber}</span>
+                        <span className="text-sm text-gray-400">{po.invoices.length} invoice{po.invoices.length !== 1 ? 's' : ''}</span>
                       </div>
-                      <div className="text-xs text-gray-400 mt-0.5">PO: {inv.poNumber} · Job: {inv.jobNumber || '—'} · {fmtDate(inv.invoiceDate)}</div>
+                      <div className="text-sm text-gray-500 mt-0.5">
+                        {po.vendor}{po.jobs.size > 0 ? ` · Jobs: ${Array.from(po.jobs).join(', ')}` : ''}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-right">
-                      <div className={`font-bold ${parseFloat(inv.total) < 0 ? 'text-purple-600' : 'text-gray-900'}`}>{fmt$(inv.total)}</div>
-                      <div className="text-xs text-gray-400">{inv.lineItems.length} items</div>
+                      <div className={`font-bold text-lg ${po.totalAmount < 0 ? 'text-purple-600' : 'text-gray-900'}`}>
+                        {po.totalAmount < 0 ? '-' : ''}{fmt$(po.totalAmount)}
+                      </div>
+                      <div className="text-xs text-gray-400">total billed</div>
                     </div>
-                    {expandedInvoices.has(inv.id) ? <ChevronDown className="w-5 h-5 text-gray-300" /> : <ChevronRight className="w-5 h-5 text-gray-300" />}
+                    {expandedPOs.has(po.poNumber)
+                      ? <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                      : <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />}
                   </div>
                 </button>
-                {expandedInvoices.has(inv.id) && (
-                  <div className="border-t border-gray-100 p-4 bg-gray-50">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-100 pb-2">
-                          <th className="pb-2 font-medium">Item #</th><th className="pb-2 font-medium">Description</th>
-                          <th className="pb-2 font-medium text-center">Ord</th><th className="pb-2 font-medium text-center">Shp</th>
-                          <th className="pb-2 font-medium">UoM</th><th className="pb-2 font-medium text-right">Unit $</th><th className="pb-2 font-medium text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {inv.lineItems.map((li, i) => (
-                          <tr key={i} className="border-b border-gray-50 last:border-0">
-                            <td className="py-2 font-mono text-xs font-semibold" style={{ color: NAVY }}>{li.itemNumber}</td>
-                            <td className="py-2 text-gray-600 max-w-xs truncate pr-4">{li.description}</td>
-                            <td className="py-2 text-center text-gray-600">{li.qtyOrdered}</td>
-                            <td className="py-2 text-center text-gray-600">{li.qtyShipped}</td>
-                            <td className="py-2 text-gray-500">{li.uom}</td>
-                            <td className="py-2 text-right text-gray-700">${li.unitPrice.toFixed(3)}</td>
-                            <td className="py-2 text-right font-semibold text-gray-900">${li.amount.toFixed(2)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+
+                {/* ── Invoice rows ── */}
+                {expandedPOs.has(po.poNumber) && (
+                  <div className="divide-y divide-gray-50">
+                    {po.invoices.map(inv => (
+                      <div key={inv.id}>
+                        <button
+                          className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors text-left"
+                          onClick={() => toggleInv(inv.id)}
+                        >
+                          <div className="flex items-center gap-3 pl-10">
+                            <FileText className="w-4 h-4 text-gray-300 flex-shrink-0" />
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-gray-800">{inv.invoiceNumber}</span>
+                              <StatusBadge status={inv.status} />
+                              <span className="text-xs text-gray-400">{fmtDate(inv.invoiceDate)}</span>
+                              {inv.jobNumber && <span className="text-xs text-gray-400">Job: {inv.jobNumber}</span>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="text-right">
+                              <span className={`font-semibold ${parseFloat(inv.total) < 0 ? 'text-purple-600' : 'text-gray-800'}`}>
+                                {fmt$(inv.total)}
+                              </span>
+                              <div className="text-xs text-gray-400">{inv.lineItems.length} items</div>
+                            </div>
+                            {expandedInvoices.has(inv.id)
+                              ? <ChevronDown className="w-4 h-4 text-gray-300" />
+                              : <ChevronRight className="w-4 h-4 text-gray-300" />}
+                          </div>
+                        </button>
+
+                        {/* ── Line items ── */}
+                        {expandedInvoices.has(inv.id) && (
+                          <div className="px-5 pb-4 pt-2 bg-gray-50 pl-20">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-200">
+                                  <th className="pb-2 font-medium">Item #</th>
+                                  <th className="pb-2 font-medium">Description</th>
+                                  <th className="pb-2 font-medium text-center">Ord</th>
+                                  <th className="pb-2 font-medium text-center">Shp</th>
+                                  <th className="pb-2 font-medium">UoM</th>
+                                  <th className="pb-2 font-medium text-right">Unit $</th>
+                                  <th className="pb-2 font-medium text-right">Amount</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {inv.lineItems.map((li, i) => (
+                                  <tr key={i} className="border-b border-gray-100 last:border-0">
+                                    <td className="py-1.5 font-mono text-xs font-semibold" style={{ color: NAVY }}>{li.itemNumber}</td>
+                                    <td className="py-1.5 text-gray-600 max-w-xs truncate pr-4">{li.description}</td>
+                                    <td className="py-1.5 text-center text-gray-600">{li.qtyOrdered}</td>
+                                    <td className="py-1.5 text-center text-gray-600">{li.qtyShipped}</td>
+                                    <td className="py-1.5 text-gray-500">{li.uom}</td>
+                                    <td className="py-1.5 text-right text-gray-700">${li.unitPrice.toFixed(3)}</td>
+                                    <td className="py-1.5 text-right font-semibold text-gray-900">${li.amount.toFixed(2)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
