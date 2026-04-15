@@ -146,8 +146,9 @@ function parseFormParserResponse(document) {
         item:        headers.findIndex(h => h.includes('item')),
         description: headers.findIndex(h => h.includes('desc')),
         quantity:    headers.findIndex(h => /qty|quant/.test(h)),
-        price:       headers.findIndex(h => /net\s*price|unit\s*price|price/.test(h)),
-        uom:         headers.findIndex(h => /\bum\b|^uom$/.test(h)),
+        price:       headers.findIndex(h => /net\s*price|unit\s*price|price/.test(h) && !/unit\s*of/.test(h)),
+        // Widen UoM detection: "u/m", "um", "uom", "unit" (but not "unit price"), "lm", "measure"
+        uom:         headers.findIndex(h => /^u\/?m$|^uom$|^lm$|unit\s*of\s*meas|^unit$/.test(h)),
         total:       headers.findIndex(h => h.includes('total')),
       };
 
@@ -157,12 +158,17 @@ function parseFormParserResponse(document) {
         const description = idx.description >= 0 ? cells[idx.description]                 : '';
         if (!itemNumber && !description) continue;
 
+        // Sanitise UoM: must be short alphabetic code (EA, LF, C, etc.)
+        // If the cell contains digits or is too long it's a mis-parsed column.
+        const rawUom = idx.uom >= 0 ? (cells[idx.uom] || '').trim() : '';
+        const uom = rawUom && /^[A-Za-z\/.]{1,10}$/.test(rawUom) ? rawUom.toUpperCase() : 'EA';
+
         result.lineItems.push({
           itemNumber,
           description,
           quantity:   idx.quantity >= 0 ? parseFloat(cells[idx.quantity])    || 1 : 1,
           unitPrice:  idx.price    >= 0 ? parseAmount(cells[idx.price])          : 0,
-          uom:        idx.uom      >= 0 ? cells[idx.uom] || 'EA'                 : 'EA',
+          uom,
           lineAmount: idx.total    >= 0 ? parseAmount(cells[idx.total])          : 0,
         });
       }
@@ -171,10 +177,13 @@ function parseFormParserResponse(document) {
       for (const field of page.formFields || []) {
         const key = getLayoutText(field.fieldName,  fullText).toLowerCase();
         const val = getLayoutText(field.fieldValue, fullText);
-        if (/bid.?no|bid.?num|quote.?no/.test(key))  result.header.docNumber   = val;
-        if (/bid.?date|quote.?date/.test(key))        result.header.docDate     = val;
-        if (/net.?total|subtotal/.test(key))          result.header.subtotal    = parseAmount(val);
-        if (/total/.test(key) && !/sub/.test(key))    result.header.totalAmount = parseAmount(val);
+        if (/bid.?no|bid.?num|quote.?no/.test(key))                    result.header.docNumber   = val;
+        if (/bid.?date|quote.?date/.test(key))                          result.header.docDate     = val;
+        if (/net.?total|subtotal/.test(key))                            result.header.subtotal    = parseAmount(val);
+        if (/total/.test(key) && !/sub/.test(key))                      result.header.totalAmount = parseAmount(val);
+        // Capture vendor/company name from quote header fields
+        if (/vendor|company|sold.?to|bill.?to|^from$|supplier/.test(key) && val && val.length > 1)
+          result.header.vendorName = val;
       }
     }
   }
@@ -225,6 +234,37 @@ function parseExcelFile(buffer, fileName) {
 
 // ── Save parsed document to PostgreSQL ───────────────────────────────────────
 const trunc = (s, n = 500) => s ? String(s).substring(0, n) : s;
+
+// Find or create a vendor by name; returns vendor_id or null if name is blank/unknown.
+async function findOrCreateVendor(client, vendorName) {
+  if (!vendorName || vendorName.trim().toLowerCase() === 'unknown') return null;
+  const name = vendorName.trim();
+  const upper = name.toUpperCase();
+  // Try exact match (case-insensitive)
+  const existing = await client.query(
+    `SELECT vendor_id FROM procurement.vendors WHERE UPPER(vendor_name) = $1 LIMIT 1`,
+    [upper]
+  );
+  if (existing.rows.length > 0) return existing.rows[0].vendor_id;
+  // Create new vendor record
+  const code = upper.replace(/[^A-Z0-9]/g, '').substring(0, 20) || 'VENDOR';
+  try {
+    const { rows } = await client.query(
+      `INSERT INTO procurement.vendors (vendor_name, vendor_code) VALUES ($1, $2)
+       ON CONFLICT (vendor_code) DO UPDATE SET vendor_name = EXCLUDED.vendor_name
+       RETURNING vendor_id`,
+      [name, code]
+    );
+    return rows[0].vendor_id;
+  } catch {
+    // If vendors table has no unique constraint on code, plain insert
+    const { rows } = await client.query(
+      `INSERT INTO procurement.vendors (vendor_name) VALUES ($1) RETURNING vendor_id`,
+      [name]
+    );
+    return rows[0].vendor_id;
+  }
+}
 
 // Validate dates from Document AI before passing to PostgreSQL.
 // Always returns ISO YYYY-MM-DD (not the original string) so garbage
@@ -286,10 +326,11 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
       }
       if (!skipped) {
         const fnMeta = extractFilenameMetadata(fileName);
+        const vendorId = await findOrCreateVendor(client, parsed.header.vendorName);
         const { rows } = await client.query(
           `INSERT INTO invoices
-             (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, po_number, job_number, status)
-           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, $7, $8, 'PENDING')
+             (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, po_number, job_number, status, vendor_id)
+           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, $7, $8, 'PENDING', $9)
            RETURNING invoice_id`,
           [
             trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
@@ -300,6 +341,7 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
             trunc(fileName),
             trunc(parsed.header.poNumber  || fnMeta.poNumber  || '', 100),
             trunc(parsed.header.jobNumber || fnMeta.jobNumber || '', 100),
+            vendorId,
           ]
         );
         recordId = rows[0].invoice_id;
@@ -334,10 +376,11 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
         await client.query('DELETE FROM quotes WHERE quote_id = $1', [dup.rows[0].quote_id]);
       }
       if (!skipped) {
+        const vendorId = await findOrCreateVendor(client, parsed.header.vendorName);
         const { rows } = await client.query(
           `INSERT INTO quotes
-             (bid_number, bid_date, net_total, total_amount, source_filename, status)
-           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, 'ACTIVE')
+             (bid_number, bid_date, net_total, total_amount, source_filename, status, vendor_id)
+           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, 'ACTIVE', $6)
            RETURNING quote_id`,
           [
             trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
@@ -345,6 +388,7 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
             parsed.header.subtotal    || parsed.header.totalAmount || 0,
             parsed.header.totalAmount || 0,
             trunc(fileName),
+            vendorId,
           ]
         );
         recordId = rows[0].quote_id;
