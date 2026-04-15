@@ -6,6 +6,7 @@ const { DocumentProcessorServiceClient } = require('@google-cloud/documentai').v
 const { Connector } = require('@google-cloud/cloud-sql-connector');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
+const { PDFDocument } = require('pdf-lib');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -409,29 +410,85 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
       console.log(`Excel parsed: ${file.originalname} — ${parsed.lineItems.length} line items`);
 
     } else if (isPdf) {
-      // Route to the right processor: Form Parser for quotes, Invoice Parser for invoices/POs
-      const isQuote      = docType === 'quote';
-      const processorId  = isQuote ? DOCAI_QUOTE_PROCESSOR : DOCAI_PROCESSOR;
+      const isQuote     = docType === 'quote';
+      const processorId = isQuote ? DOCAI_QUOTE_PROCESSOR : DOCAI_PROCESSOR;
+
       if (processorId) {
-        try {
-          const client = new DocumentProcessorServiceClient();
-          const name = `projects/${PROJECT_ID}/locations/${DOCAI_LOCATION}/processors/${processorId}`;
-          const [response] = await client.processDocument({
-            name,
-            rawDocument: { content: file.buffer.toString('base64'), mimeType: 'application/pdf' },
-          });
-          parsed = isQuote
-            ? parseFormParserResponse(response.document)
-            : parseDocAiResponse(response.document);
-          docaiProcessed = true;
-          console.log(`Document AI (${isQuote ? 'form' : 'invoice'}) processed: ${file.originalname} — ${parsed.lineItems.length} line items`);
-        } catch (e) {
-          console.error('Document AI error (non-fatal):', e.message);
+        // Split PDF into individual pages and process each separately
+        const pdfDoc   = await PDFDocument.load(file.buffer);
+        const numPages = pdfDoc.getPageCount();
+        console.log(`PDF has ${numPages} page(s): ${file.originalname}`);
+
+        const docaiClient = new DocumentProcessorServiceClient();
+        const procName    = `projects/${PROJECT_ID}/locations/${DOCAI_LOCATION}/processors/${processorId}`;
+
+        // Collect all pages as individual buffers
+        const pageBuffers = await Promise.all(
+          Array.from({ length: numPages }, async (_, i) => {
+            const single = await PDFDocument.create();
+            const [page] = await single.copyPages(pdfDoc, [i]);
+            single.addPage(page);
+            return Buffer.from(await single.save());
+          })
+        );
+
+        // Process pages sequentially through Document AI
+        const allParsed = [];
+        for (let i = 0; i < pageBuffers.length; i++) {
+          try {
+            const [response] = await docaiClient.processDocument({
+              name: procName,
+              rawDocument: { content: pageBuffers[i].toString('base64'), mimeType: 'application/pdf' },
+            });
+            const p = isQuote
+              ? parseFormParserResponse(response.document)
+              : parseDocAiResponse(response.document);
+            if (p.header.docNumber || p.lineItems.length > 0) {
+              allParsed.push(p);
+              console.log(`Page ${i+1}/${numPages}: ${p.header.docNumber || '(no doc#)'} — ${p.lineItems.length} items`);
+            }
+          } catch (e) {
+            console.error(`Document AI error on page ${i+1}:`, e.message);
+          }
         }
+
+        docaiProcessed = allParsed.length > 0;
+        // Use first page result for the single-doc response fields; all pages saved below
+        if (allParsed.length > 0) parsed = allParsed[0];
+
+        // 3. Save every extracted page to PostgreSQL
+        const pool = await getPool();
+        let totalItems = 0;
+        let errors = [];
+        for (let i = 0; i < allParsed.length; i++) {
+          const pageName = numPages === 1
+            ? file.originalname
+            : `${file.originalname} [page ${i+1}]`;
+          try {
+            const r = await saveToDatabase(pool, docType, pageName, allParsed[i]);
+            totalItems += r.lineItemsInserted;
+          } catch (e) {
+            errors.push(`Page ${i+1}: ${e.message}`);
+            console.error(`DB error page ${i+1}:`, e.message);
+          }
+        }
+
+        return res.json({
+          gcPath,
+          fileName: file.originalname,
+          docType,
+          fileType: 'pdf',
+          pageCount: numPages,
+          invoicesProcessed: allParsed.length,
+          dbSaved: allParsed.length > 0 && errors.length < allParsed.length,
+          dbError: errors.length > 0 ? errors.join('; ') : null,
+          documentAiProcessed: docaiProcessed,
+          lineItemsExtracted: totalItems,
+        });
       }
     }
 
-    // 3. Save to PostgreSQL
+    // 3. Save to PostgreSQL (Excel or PDF with no processor configured)
     let dbResult = null;
     let dbError = null;
     try {
