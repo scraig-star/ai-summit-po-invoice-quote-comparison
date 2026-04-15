@@ -147,7 +147,7 @@ function parseFormParserResponse(document) {
         description: headers.findIndex(h => h.includes('desc')),
         quantity:    headers.findIndex(h => /qty|quant/.test(h)),
         price:       headers.findIndex(h => /net\s*price|unit\s*price|price/.test(h)),
-        uom:         headers.findIndex(h => /\bum\b|uom|unit/.test(h)),
+        uom:         headers.findIndex(h => /\bum\b|^uom$/.test(h)),
         total:       headers.findIndex(h => h.includes('total')),
       };
 
