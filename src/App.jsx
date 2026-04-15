@@ -14,6 +14,15 @@ const GREEN = '#7DB928';
 const fmt$ = (v) => `$${Math.abs(parseFloat(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
+// Normalize PO numbers — strip document-extraction prefixes like "OI-", "PO-", "P.O." before digits
+// so "OI-230751" and "230751" merge into the same PO group.
+const normalizePONumber = (raw) => {
+  if (!raw || raw === '(No PO)') return raw;
+  // Match an alpha/dot prefix (optionally followed by hyphen/space) before the numeric portion
+  const match = raw.trim().match(/^[A-Z.\s]+-?\s*(\d[\w-]*)$/i);
+  return match ? match[1].trim() : raw.trim();
+};
+
 // Normalize raw vendor names (e.g. "FERGUSON ENTERPRISES LLC" → "Ferguson")
 const normalizeVendor = (raw) => {
   if (!raw || raw.toLowerCase() === 'unknown') return 'Unknown';
@@ -119,7 +128,13 @@ export default function ProcurementApp() {
   // ── Derived data ──────────────────────────────────────────────────────────────
   const filteredInvoices = invoices.filter(inv => {
     if (activeFilters.vendor         && !inv.vendor?.toLowerCase().includes(activeFilters.vendor.toLowerCase()))               return false;
-    if (activeFilters.poNumber       && !inv.poNumber?.toLowerCase().includes(activeFilters.poNumber.toLowerCase()))           return false;
+    // Match against both the raw and normalized PO number so "OI-230751" matches a search for "230751"
+    if (activeFilters.poNumber) {
+      const q = activeFilters.poNumber.toLowerCase();
+      const rawMatch  = inv.poNumber?.toLowerCase().includes(q);
+      const normMatch = normalizePONumber(inv.poNumber)?.toLowerCase().includes(q);
+      if (!rawMatch && !normMatch) return false;
+    }
     if (activeFilters.invoiceNumber  && !inv.invoiceNumber?.toLowerCase().includes(activeFilters.invoiceNumber.toLowerCase())) return false;
     if (activeFilters.jobNumber      && !inv.jobNumber?.toLowerCase().includes(activeFilters.jobNumber.toLowerCase()))         return false;
     if (activeFilters.dateFrom       && inv.invoiceDate < activeFilters.dateFrom) return false;
@@ -142,12 +157,19 @@ export default function ProcurementApp() {
   }, {});
 
   const poGroups = filteredInvoices.reduce((acc, inv) => {
-    const key = inv.poNumber || '(No PO)';
+    // Normalize PO number so "OI-230751" and "230751" group together
+    const key = normalizePONumber(inv.poNumber) || '(No PO)';
 
-    // Resolve vendor from invoice → comparison data → fallback
-    const rawVendor = (inv.vendor && inv.vendor.toLowerCase() !== 'unknown')
+    // Resolve vendor: invoice → comparison data by invoice# → line-item compMap → fallback
+    let rawVendor = (inv.vendor && inv.vendor.toLowerCase() !== 'unknown')
       ? inv.vendor
       : (vendorByInvoiceNum[inv.invoiceNumber?.trim()] || '');
+    if (!rawVendor) {
+      // Try to find vendor from any matched line item in compMap
+      rawVendor = inv.lineItems
+        .map(li => compMap[li.itemNumber?.toUpperCase().trim()]?.vendor)
+        .find(v => v && v.toLowerCase() !== 'unknown') || '';
+    }
     const displayVendor = normalizeVendor(rawVendor) || 'Unknown';
 
     // Compute quoted total for this invoice using compMap
@@ -159,6 +181,7 @@ export default function ProcurementApp() {
     if (!acc[key]) {
       acc[key] = { poNumber: key, vendor: displayVendor, rawVendor, invoices: [], jobs: new Set(), totalAmount: 0, quotedTotal: 0 };
     } else if (!acc[key].rawVendor && rawVendor) {
+      // Enrich vendor if we found better data from a later invoice
       acc[key].rawVendor = rawVendor;
       acc[key].vendor = displayVendor;
     }
