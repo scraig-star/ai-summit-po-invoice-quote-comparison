@@ -636,7 +636,7 @@ export default function ProcurementApp() {
         await new Promise(r => setTimeout(r, 2000));
         return {
           gcPath: `gs://${cloudConfig.bucketName}/${folder}/${file.name}`,
-          bqSynced: true,
+          dbSaved: true,
           documentAiProcessed: true,
         };
       }
@@ -655,9 +655,10 @@ export default function ProcurementApp() {
         setTimeout(() => {
           setUploadQueue(prev => prev.map(item =>
             item.id === id ? {
-              ...item, status: 'complete', progress: 100,
+              ...item, status: result.dbSaved ? 'complete' : 'error', progress: 100,
               gcPath: result.gcPath,
-              bqSynced: result.bqSynced,
+              dbSaved: result.dbSaved,
+              errorMessage: result.dbError || null,
             } : item
           ));
           // Refresh live data after successful upload
@@ -704,7 +705,7 @@ export default function ProcurementApp() {
     const statusLabel = (item) => {
       if (item.status === 'uploading') return `Uploading... ${item.progress}%`;
       if (item.status === 'processing') return 'Document AI processing...';
-      if (item.status === 'complete') return item.bqSynced ? 'Synced to BigQuery' : 'Uploaded to GCS';
+      if (item.status === 'complete') return item.dbSaved ? 'Saved to DB — pending BQ sync' : 'Uploaded to GCS';
       if (item.status === 'error') return item.errorMessage ? `Upload failed: ${item.errorMessage}` : 'Upload failed';
       return '';
     };

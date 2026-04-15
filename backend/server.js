@@ -300,12 +300,14 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
 
     // 3. Save to PostgreSQL
     let dbResult = null;
+    let dbError = null;
     try {
       const pool = await getPool();
       dbResult = await saveToDatabase(pool, docType, file.originalname, parsed);
       console.log(`DB saved: ${dbResult.lineItemsInserted} line items for ${file.originalname}`);
     } catch (e) {
-      console.error('DB write error (non-fatal):', e.message);
+      dbError = e.message;
+      console.error('DB write error:', e.message);
     }
 
     res.json({
@@ -313,7 +315,8 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
       fileName: file.originalname,
       docType,
       fileType: isExcel ? 'excel' : isPdf ? 'pdf' : 'other',
-      bqSynced: true,
+      dbSaved: dbResult !== null,
+      dbError,
       documentAiProcessed: docaiProcessed,
       lineItemsExtracted: parsed.lineItems.length,
       dbResult,
