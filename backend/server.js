@@ -58,6 +58,18 @@ function findCol(keys, candidates) {
   return null;
 }
 
+// ── Parse PO# and Job# from filename ─────────────────────────────────────────
+function extractFilenameMetadata(fileName) {
+  // "Open PO 230751 Job 60140018 (2).pdf"
+  // "OJ-230751" style PO numbers
+  const poMatch  = fileName.match(/\bPO\s*#?\s*([A-Z0-9-]+)/i);
+  const jobMatch = fileName.match(/\bJob\s*#?\s*(\d+)/i);
+  return {
+    poNumber:  poMatch  ? poMatch[1].replace(/^OJ-/i, '')  : null,
+    jobNumber: jobMatch ? jobMatch[1] : null,
+  };
+}
+
 // ── Document AI parser ────────────────────────────────────────────────────────
 function parseDocAiResponse(document) {
   const result = { header: {}, lineItems: [] };
@@ -67,8 +79,9 @@ function parseDocAiResponse(document) {
     const text = entity.mentionText?.trim() || '';
     switch (entity.type) {
       case 'invoice_id':
-      case 'purchase_order':
         result.header.docNumber = text; break;
+      case 'purchase_order':
+        result.header.poNumber  = text.replace(/^OJ-/i, ''); break;
       case 'invoice_date':
         result.header.docDate = text; break;
       case 'vendor_name':
@@ -272,10 +285,11 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
         await client.query('DELETE FROM invoices WHERE invoice_id = $1', [dup.rows[0].invoice_id]);
       }
       if (!skipped) {
+        const fnMeta = extractFilenameMetadata(fileName);
         const { rows } = await client.query(
           `INSERT INTO invoices
-             (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, status)
-           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, 'PENDING')
+             (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, po_number, job_number, status)
+           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, $7, $8, 'PENDING')
            RETURNING invoice_id`,
           [
             trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
@@ -284,6 +298,8 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
             parsed.header.taxAmount   || 0,
             parsed.header.totalAmount || 0,
             trunc(fileName),
+            trunc(parsed.header.poNumber  || fnMeta.poNumber  || '', 100),
+            trunc(parsed.header.jobNumber || fnMeta.jobNumber || '', 100),
           ]
         );
         recordId = rows[0].invoice_id;
