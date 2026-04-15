@@ -155,74 +155,122 @@ function parseExcelFile(buffer, fileName) {
 // ── Save parsed document to PostgreSQL ───────────────────────────────────────
 const trunc = (s, n = 500) => s ? String(s).substring(0, n) : s;
 
+// Validate dates from Document AI before passing to PostgreSQL
+function safeDate(d) {
+  if (!d) return null;
+  const dt = new Date(d);
+  return isNaN(dt.getTime()) ? null : d;
+}
+
+// Widen columns once per server instance — guaranteed before first insert
+let _schemaDone = false;
+async function ensureSchema(client) {
+  if (_schemaDone) return;
+  const cols = [
+    'ALTER TABLE procurement.invoices ALTER COLUMN source_filename TYPE TEXT',
+    'ALTER TABLE procurement.invoices ALTER COLUMN invoice_number  TYPE TEXT',
+    'ALTER TABLE procurement.quotes   ALTER COLUMN source_filename TYPE TEXT',
+    'ALTER TABLE procurement.quotes   ALTER COLUMN bid_number      TYPE TEXT',
+  ];
+  for (const sql of cols) {
+    try { await client.query(sql); console.log('Schema:', sql); }
+    catch (e) { console.log('Schema skip:', e.message); }
+  }
+  _schemaDone = true;
+}
+
 async function saveToDatabase(pool, docType, fileName, parsed) {
   const client = await pool.connect();
   try {
+    // 1. Widen columns if needed (runs once, before any insert)
+    await ensureSchema(client);
+
     await client.query('BEGIN');
-    await client.query("SET search_path TO procurement");
+    await client.query('SET search_path TO procurement');
 
     let recordId = null;
+    let skipped  = false;
 
     if (docType === 'invoice') {
-      const { rows } = await client.query(
-        `INSERT INTO invoices
-           (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, status)
-         VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, 'PENDING')
-         RETURNING invoice_id`,
-        [
-          trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
-          parsed.header.docDate   || null,
-          parsed.header.subtotal  || 0,
-          parsed.header.taxAmount || 0,
-          parsed.header.totalAmount || 0,
-          trunc(fileName),
-        ]
+      // Dedup: skip if this filename was already saved
+      const dup = await client.query(
+        `SELECT invoice_id FROM invoices WHERE source_filename = $1 LIMIT 1`,
+        [trunc(fileName)]
       );
-      recordId = rows[0].invoice_id;
-
-      for (let i = 0; i < parsed.lineItems.length; i++) {
-        const item = parsed.lineItems[i];
-        await client.query(
-          `INSERT INTO invoice_line_items
-             (invoice_id, line_number, item_number, description, qty_shipped, uom, unit_price, line_amount)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [recordId, item.lineNumber || i+1, item.itemNumber || 'UNKNOWN',
-           item.description || '', item.quantity || 0, item.uom || 'EA',
-           item.unitPrice || 0, item.lineAmount || 0]
+      if (dup.rows.length > 0) {
+        recordId = dup.rows[0].invoice_id;
+        skipped  = true;
+      } else {
+        const { rows } = await client.query(
+          `INSERT INTO invoices
+             (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, status)
+           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, 'PENDING')
+           RETURNING invoice_id`,
+          [
+            trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
+            safeDate(parsed.header.docDate),
+            parsed.header.subtotal    || 0,
+            parsed.header.taxAmount   || 0,
+            parsed.header.totalAmount || 0,
+            trunc(fileName),
+          ]
         );
+        recordId = rows[0].invoice_id;
+
+        for (let i = 0; i < parsed.lineItems.length; i++) {
+          const item = parsed.lineItems[i];
+          await client.query(
+            `INSERT INTO invoice_line_items
+               (invoice_id, line_number, item_number, description, qty_shipped, uom, unit_price, line_amount)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [recordId, item.lineNumber || i+1, trunc(item.itemNumber || 'UNKNOWN'),
+             trunc(item.description || ''), item.quantity || 0, trunc(item.uom || 'EA', 20),
+             item.unitPrice || 0, item.lineAmount || 0]
+          );
+        }
       }
 
     } else if (docType === 'quote') {
-      const { rows } = await client.query(
-        `INSERT INTO quotes
-           (bid_number, bid_date, net_total, total_amount, source_filename, status)
-         VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, 'ACTIVE')
-         RETURNING quote_id`,
-        [
-          trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
-          parsed.header.docDate   || null,
-          parsed.header.subtotal  || parsed.header.totalAmount || 0,
-          parsed.header.totalAmount || 0,
-          trunc(fileName),
-        ]
+      // Dedup: skip if this filename was already saved
+      const dup = await client.query(
+        `SELECT quote_id FROM quotes WHERE source_filename = $1 LIMIT 1`,
+        [trunc(fileName)]
       );
-      recordId = rows[0].quote_id;
-
-      for (let i = 0; i < parsed.lineItems.length; i++) {
-        const item = parsed.lineItems[i];
-        await client.query(
-          `INSERT INTO quote_line_items
-             (quote_id, line_number, item_number, description, quantity, net_price, uom, line_total)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [recordId, item.lineNumber || i+1, item.itemNumber || 'UNKNOWN',
-           item.description || '', item.quantity || 1, item.unitPrice || 0,
-           item.uom || 'EA', item.lineAmount || 0]
+      if (dup.rows.length > 0) {
+        recordId = dup.rows[0].quote_id;
+        skipped  = true;
+      } else {
+        const { rows } = await client.query(
+          `INSERT INTO quotes
+             (bid_number, bid_date, net_total, total_amount, source_filename, status)
+           VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, 'ACTIVE')
+           RETURNING quote_id`,
+          [
+            trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
+            safeDate(parsed.header.docDate),
+            parsed.header.subtotal    || parsed.header.totalAmount || 0,
+            parsed.header.totalAmount || 0,
+            trunc(fileName),
+          ]
         );
+        recordId = rows[0].quote_id;
+
+        for (let i = 0; i < parsed.lineItems.length; i++) {
+          const item = parsed.lineItems[i];
+          await client.query(
+            `INSERT INTO quote_line_items
+               (quote_id, line_number, item_number, description, quantity, net_price, uom, line_total)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [recordId, item.lineNumber || i+1, trunc(item.itemNumber || 'UNKNOWN'),
+             trunc(item.description || ''), item.quantity || 1, item.unitPrice || 0,
+             trunc(item.uom || 'EA', 20), item.lineAmount || 0]
+          );
+        }
       }
     }
 
     await client.query('COMMIT');
-    return { recordId, lineItemsInserted: parsed.lineItems.length };
+    return { recordId, lineItemsInserted: skipped ? 0 : parsed.lineItems.length, skipped };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -455,35 +503,4 @@ app.get('/api/comparison', async (_req, res) => {
   }
 });
 
-async function runMigrations() {
-  try {
-    const pool = await getPool();
-    const client = await pool.connect();
-    try {
-      // Use fully-qualified names — no reliance on search_path for DDL
-      const alters = [
-        'ALTER TABLE procurement.invoices ALTER COLUMN source_filename TYPE TEXT',
-        'ALTER TABLE procurement.invoices ALTER COLUMN invoice_number  TYPE TEXT',
-        'ALTER TABLE procurement.quotes   ALTER COLUMN source_filename TYPE TEXT',
-        'ALTER TABLE procurement.quotes   ALTER COLUMN bid_number      TYPE TEXT',
-      ];
-      for (const sql of alters) {
-        try {
-          await client.query(sql);
-          console.log('Migration OK:', sql);
-        } catch (e) {
-          console.error('Migration step failed:', sql, e.message);
-        }
-      }
-    } finally {
-      client.release();
-    }
-  } catch (e) {
-    console.error('Migration error:', e.message);
-  }
-}
-
-app.listen(PORT, () => {
-  console.log(`Procurement API listening on :${PORT}`);
-  runMigrations();
-});
+app.listen(PORT, () => console.log(`Procurement API listening on :${PORT}`));
