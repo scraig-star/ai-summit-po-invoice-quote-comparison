@@ -153,6 +153,8 @@ function parseExcelFile(buffer, fileName) {
 }
 
 // ── Save parsed document to PostgreSQL ───────────────────────────────────────
+const trunc = (s, n = 500) => s ? String(s).substring(0, n) : s;
+
 async function saveToDatabase(pool, docType, fileName, parsed) {
   const client = await pool.connect();
   try {
@@ -168,12 +170,12 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
          VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, $6, 'PENDING')
          RETURNING invoice_id`,
         [
-          parsed.header.docNumber || fileName.replace(/\.[^.]+$/, ''),
+          trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
           parsed.header.docDate   || null,
           parsed.header.subtotal  || 0,
           parsed.header.taxAmount || 0,
           parsed.header.totalAmount || 0,
-          fileName,
+          trunc(fileName),
         ]
       );
       recordId = rows[0].invoice_id;
@@ -197,11 +199,11 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
          VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4, $5, 'ACTIVE')
          RETURNING quote_id`,
         [
-          parsed.header.docNumber || fileName.replace(/\.[^.]+$/, ''),
+          trunc(parsed.header.docNumber || fileName.replace(/\.[^.]+$/, '')),
           parsed.header.docDate   || null,
           parsed.header.subtotal  || parsed.header.totalAmount || 0,
           parsed.header.totalAmount || 0,
-          fileName,
+          trunc(fileName),
         ]
       );
       recordId = rows[0].quote_id;
@@ -458,21 +460,26 @@ async function runMigrations() {
     const pool = await getPool();
     const client = await pool.connect();
     try {
-      await client.query('SET search_path TO procurement');
-      // Widen all string columns that can receive long filenames or parsed text
+      // Use fully-qualified names — no reliance on search_path for DDL
       const alters = [
-        'ALTER TABLE invoices ALTER COLUMN source_filename  TYPE TEXT',
-        'ALTER TABLE invoices ALTER COLUMN invoice_number   TYPE TEXT',
-        'ALTER TABLE quotes   ALTER COLUMN source_filename  TYPE TEXT',
-        'ALTER TABLE quotes   ALTER COLUMN bid_number       TYPE TEXT',
+        'ALTER TABLE procurement.invoices ALTER COLUMN source_filename TYPE TEXT',
+        'ALTER TABLE procurement.invoices ALTER COLUMN invoice_number  TYPE TEXT',
+        'ALTER TABLE procurement.quotes   ALTER COLUMN source_filename TYPE TEXT',
+        'ALTER TABLE procurement.quotes   ALTER COLUMN bid_number      TYPE TEXT',
       ];
-      for (const sql of alters) await client.query(sql);
-      console.log('Migrations complete');
+      for (const sql of alters) {
+        try {
+          await client.query(sql);
+          console.log('Migration OK:', sql);
+        } catch (e) {
+          console.error('Migration step failed:', sql, e.message);
+        }
+      }
     } finally {
       client.release();
     }
   } catch (e) {
-    console.error('Migration error (non-fatal):', e.message);
+    console.error('Migration error:', e.message);
   }
 }
 
