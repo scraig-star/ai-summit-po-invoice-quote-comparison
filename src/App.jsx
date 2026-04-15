@@ -172,23 +172,31 @@ export default function ProcurementApp() {
     }
     const displayVendor = normalizeVendor(rawVendor) || 'Unknown';
 
-    // Compute quoted total for this invoice using compMap
-    const invQuotedTotal = inv.lineItems.reduce((s, li) => {
+    // Only include items that have BOTH an invoice price and a quoted price.
+    // This keeps the comparison apples-to-apples and prevents a misleading
+    // variance when most items are unmatched.
+    let invQuotedTotal = 0, invMatchedAmount = 0;
+    inv.lineItems.forEach(li => {
       const cmp = compMap[li.itemNumber?.toUpperCase().trim()];
-      return s + (cmp?.quotedPrice > 0 ? cmp.quotedPrice * (li.qtyShipped || li.qtyOrdered || 0) : 0);
-    }, 0);
+      if (cmp?.quotedPrice > 0 && li.unitPrice > 0) {
+        const qty = li.qtyShipped || li.qtyOrdered || 0;
+        invQuotedTotal  += cmp.quotedPrice * qty;
+        invMatchedAmount += li.amount;
+      }
+    });
 
     if (!acc[key]) {
-      acc[key] = { poNumber: key, vendor: displayVendor, rawVendor, invoices: [], jobs: new Set(), totalAmount: 0, quotedTotal: 0 };
+      acc[key] = { poNumber: key, vendor: displayVendor, rawVendor, invoices: [], jobs: new Set(), totalAmount: 0, quotedTotal: 0, matchedAmount: 0 };
     } else if (!acc[key].rawVendor && rawVendor) {
       // Enrich vendor if we found better data from a later invoice
       acc[key].rawVendor = rawVendor;
       acc[key].vendor = displayVendor;
     }
-    acc[key].invoices.push({ ...inv, quotedTotal: invQuotedTotal });
+    acc[key].invoices.push({ ...inv, quotedTotal: invQuotedTotal, matchedAmount: invMatchedAmount });
     if (inv.jobNumber) acc[key].jobs.add(inv.jobNumber);
-    acc[key].totalAmount += parseFloat(inv.total || 0);
-    acc[key].quotedTotal += invQuotedTotal;
+    acc[key].totalAmount  += parseFloat(inv.total || 0);
+    acc[key].quotedTotal  += invQuotedTotal;
+    acc[key].matchedAmount += invMatchedAmount;
     return acc;
   }, {});
 
@@ -381,7 +389,8 @@ export default function ProcurementApp() {
         )}
 
         {poList.map(po => {
-          const poVariance = po.quotedTotal > 0 ? po.totalAmount - po.quotedTotal : null;
+          // Compare only the matched portion (items with both invoice + quoted price)
+          const poVariance = po.quotedTotal > 0 ? po.matchedAmount - po.quotedTotal : null;
           const poVariancePct = po.quotedTotal > 0 ? (poVariance / po.quotedTotal * 100) : null;
 
           return (
@@ -438,7 +447,7 @@ export default function ProcurementApp() {
               {expandedPOs.has(po.poNumber) && (
                 <div className="border-t border-gray-100">
                   {po.invoices.map(inv => {
-                    const invVariance = inv.quotedTotal > 0 ? parseFloat(inv.total) - inv.quotedTotal : null;
+                    const invVariance = inv.quotedTotal > 0 ? inv.matchedAmount - inv.quotedTotal : null;
                     const invVariancePct = inv.quotedTotal > 0 ? (invVariance / inv.quotedTotal * 100) : null;
 
                     return (
@@ -508,30 +517,36 @@ export default function ProcurementApp() {
                                       <td className="py-1.5 text-right text-gray-800">{invoicePrice ? `$${invoicePrice.toFixed(3)}` : '—'}</td>
                                       <td className="py-1.5 text-right text-gray-500">{quotedPrice ? `$${quotedPrice.toFixed(3)}` : '—'}</td>
                                       <td className={`py-1.5 text-right font-semibold text-xs ${variance > 0.1 ? 'text-red-600' : variance !== null && variance < -0.1 ? 'text-green-600' : variance !== null ? 'text-gray-400' : 'text-gray-300'}`}>
-                                        {variance !== null ? `${variance > 0 ? '+' : ''}${variance.toFixed(2)}%` : '—'}
+                                        {variance !== null ? (
+                                          <div>
+                                            <div>{variance > 0 ? '+' : ''}{variance.toFixed(2)}%</div>
+                                            <div className="opacity-70 font-normal">{variance > 0 ? '+' : ''}{fmt$((invoicePrice - quotedPrice) * (li.qtyShipped || li.qtyOrdered || 0))}</div>
+                                          </div>
+                                        ) : '—'}
                                       </td>
                                       <td className="py-1.5 text-right font-semibold text-gray-900">{fmt$(li.amount)}</td>
                                     </tr>
                                   );
                                 })}
 
-                                {/* Totals row */}
+                                {/* Totals row — only reflects items with both invoice $ and quoted $ */}
                                 {(() => {
-                                  const quotedT = inv.quotedTotal;
+                                  const quotedT   = inv.quotedTotal;
+                                  const matchedT  = inv.matchedAmount; // invoiced amount for matched items only
                                   const invoicedT = parseFloat(inv.total);
-                                  const varT = quotedT > 0 ? invoicedT - quotedT : null;
+                                  const varT    = quotedT > 0 ? matchedT - quotedT : null;
                                   const varTpct = quotedT > 0 ? (varT / quotedT * 100) : null;
                                   return (
                                     <tr className="border-t-2 border-gray-200 bg-gray-100/60 font-semibold">
                                       <td colSpan={6} className="pt-2 pb-1.5 text-xs text-gray-500 uppercase tracking-wide">Totals</td>
                                       <td className="pt-2 pb-1.5 text-right text-xs text-gray-400">—</td>
                                       <td className="pt-2 pb-1.5 text-right text-gray-600 text-xs">{quotedT > 0 ? fmt$(quotedT) : '—'}</td>
-                                      <td className={`pt-2 pb-1.5 text-right text-xs font-bold ${varT > 0.01 ? 'text-red-600' : varT < -0.01 ? 'text-green-600' : 'text-gray-400'}`}>
+                                      <td className={`pt-2 pb-1.5 text-right text-xs font-bold ${varT > 0.01 ? 'text-red-600' : varT !== null && varT < -0.01 ? 'text-green-600' : 'text-gray-400'}`}>
                                         {varT !== null ? (
-                                          <span title={`${varTpct > 0 ? '+' : ''}${varTpct.toFixed(1)}%`}>
-                                            {varT > 0 ? '+' : ''}{fmt$(varT)}{' '}
-                                            <span className="opacity-70">({varTpct > 0 ? '+' : ''}{varTpct.toFixed(1)}%)</span>
-                                          </span>
+                                          <div>
+                                            <div>{varT > 0 ? '+' : ''}{fmt$(varT)}</div>
+                                            <div className="opacity-70 font-normal">({varTpct > 0 ? '+' : ''}{varTpct.toFixed(1)}%)</div>
+                                          </div>
                                         ) : '—'}
                                       </td>
                                       <td className="pt-2 pb-1.5 text-right text-gray-900">{fmt$(invoicedT)}</td>
@@ -637,6 +652,11 @@ export default function ProcurementApp() {
 
   // ── Item Catalog — grouped by vendor → quote number ───────────────────────────
   const ItemCatalogTab = () => {
+    const [expandedQuotes, setExpandedQuotes] = useState(new Set());
+    const toggleQuote = (key) => setExpandedQuotes(prev => {
+      const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
+    });
+
     // Build grouped structure: normalizedVendor → quoteNumber → { items, bidDate, rawVendor }
     const grouped = {};
     quotes.forEach(q => {
@@ -693,46 +713,56 @@ export default function ProcurementApp() {
                   </span>
                 </div>
 
-                {/* Quote groups */}
-                {Object.entries(quoteGroups).sort(([a], [b]) => a.localeCompare(b)).map(([quoteNum, data]) => (
+                {/* Quote groups — collapsible */}
+                {Object.entries(quoteGroups).sort(([a], [b]) => a.localeCompare(b)).map(([quoteNum, data]) => {
+                  const qKey = `${vendor}::${quoteNum}`;
+                  const isOpen = expandedQuotes.has(qKey);
+                  return (
                   <div key={quoteNum} className="border-b border-gray-50 last:border-0">
-                    {/* Quote subheader */}
-                    <div className="px-5 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-4">
-                      <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Quote #{quoteNum}</span>
+                    {/* Quote subheader — clickable toggle */}
+                    <button
+                      className="w-full px-5 py-2.5 bg-gray-50 border-b border-gray-100 flex items-center gap-3 hover:bg-gray-100 transition-colors text-left"
+                      onClick={() => toggleQuote(qKey)}
+                    >
+                      {isOpen ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+                      <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Quote #{quoteNum}</span>
                       {data.bidDate && <span className="text-xs text-gray-400">{fmtDate(data.bidDate)}</span>}
                       <span className="text-xs text-gray-400">{data.items.length} item{data.items.length !== 1 ? 's' : ''}</span>
-                    </div>
+                    </button>
 
-                    {data.items.length === 0 ? (
-                      <div className="px-5 py-3 text-xs text-gray-400 italic">No items match your search in this quote.</div>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-100">
-                              <th className="px-4 py-2 font-medium">Item #</th>
-                              <th className="px-4 py-2 font-medium">Description</th>
-                              <th className="px-4 py-2 font-medium">UoM</th>
-                              <th className="px-4 py-2 font-medium text-right">Unit Price</th>
-                              <th className="px-4 py-2 font-medium text-right">Qty</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-gray-50">
-                            {data.items.map((item, idx) => (
-                              <tr key={idx} className="hover:bg-gray-50">
-                                <td className="px-4 py-2 font-mono text-xs font-semibold" style={{ color: NAVY }}>{item.itemNumber}</td>
-                                <td className="px-4 py-2 text-gray-600 max-w-sm truncate">{item.description}</td>
-                                <td className="px-4 py-2 text-gray-500">{item.uom}</td>
-                                <td className="px-4 py-2 text-right font-semibold text-gray-900">${item.netPrice.toFixed(3)}</td>
-                                <td className="px-4 py-2 text-right text-gray-600">{item.qty}</td>
+                    {isOpen && (
+                      data.items.length === 0 ? (
+                        <div className="px-5 py-3 text-xs text-gray-400 italic">No items match your search in this quote.</div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-xs text-gray-400 uppercase border-b border-gray-100">
+                                <th className="px-4 py-2 font-medium">Item #</th>
+                                <th className="px-4 py-2 font-medium">Description</th>
+                                <th className="px-4 py-2 font-medium">UoM</th>
+                                <th className="px-4 py-2 font-medium text-right">Unit Price</th>
+                                <th className="px-4 py-2 font-medium text-right">Qty</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                            </thead>
+                            <tbody className="divide-y divide-gray-50">
+                              {data.items.map((item, idx) => (
+                                <tr key={idx} className="hover:bg-gray-50">
+                                  <td className="px-4 py-2 font-mono text-xs font-semibold" style={{ color: NAVY }}>{item.itemNumber}</td>
+                                  <td className="px-4 py-2 text-gray-600 max-w-sm truncate">{item.description}</td>
+                                  <td className="px-4 py-2 text-gray-500">{item.uom}</td>
+                                  <td className="px-4 py-2 text-right font-semibold text-gray-900">${item.netPrice.toFixed(3)}</td>
+                                  <td className="px-4 py-2 text-right text-gray-600">{item.qty}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>
