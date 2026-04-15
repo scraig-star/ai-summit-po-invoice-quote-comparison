@@ -453,4 +453,24 @@ app.get('/api/comparison', async (_req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Procurement API listening on :${PORT}`));
+async function runMigrations() {
+  try {
+    const pool = await getPool();
+    const client = await pool.connect();
+    try {
+      await client.query('SET search_path TO procurement');
+      await client.query('ALTER TABLE invoices ALTER COLUMN source_filename TYPE TEXT');
+      await client.query('ALTER TABLE quotes   ALTER COLUMN source_filename TYPE TEXT');
+      console.log('Migrations complete');
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error('Migration error (non-fatal):', e.message);
+  }
+}
+
+app.listen(PORT, () => {
+  console.log(`Procurement API listening on :${PORT}`);
+  runMigrations();
+});
