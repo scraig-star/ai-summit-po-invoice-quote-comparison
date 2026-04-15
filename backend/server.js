@@ -16,8 +16,9 @@ const SQL_INSTANCE    = process.env.CLOUD_SQL_INSTANCE || 'agent-space-466318:us
 const DB_NAME         = process.env.DB_NAME            || 'procurement';
 const DB_USER         = process.env.DB_USER            || 'procurement_admin';
 const DB_PASSWORD     = process.env.DB_PASSWORD        || '';
-const DOCAI_PROCESSOR = process.env.DOCAI_PROCESSOR_ID || '';
-const DOCAI_LOCATION  = process.env.DOCAI_LOCATION     || 'us';
+const DOCAI_PROCESSOR       = process.env.DOCAI_PROCESSOR_ID       || '';
+const DOCAI_QUOTE_PROCESSOR = process.env.DOCAI_QUOTE_PROCESSOR_ID || '98991256bdff5118';
+const DOCAI_LOCATION        = process.env.DOCAI_LOCATION            || 'us';
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
@@ -104,6 +105,62 @@ function parseDocAiResponse(document) {
         }
         if (item.itemNumber || item.description) result.lineItems.push(item);
         break;
+      }
+    }
+  }
+  return result;
+}
+
+// ── Form Parser (table-based) for quotes ─────────────────────────────────────
+function getLayoutText(layout, fullText) {
+  return (layout?.textAnchor?.textSegments || [])
+    .map(s => fullText.slice(parseInt(s.startIndex || 0), parseInt(s.endIndex)))
+    .join('').trim();
+}
+
+function parseFormParserResponse(document) {
+  const result = { header: {}, lineItems: [] };
+  const fullText = document.text || '';
+
+  for (const page of document.pages || []) {
+    for (const table of page.tables || []) {
+      // Read header row to identify columns
+      const headers = (table.headerRows?.[0]?.cells || [])
+        .map(c => getLayoutText(c.layout, fullText).toLowerCase());
+
+      const idx = {
+        item:        headers.findIndex(h => h.includes('item')),
+        description: headers.findIndex(h => h.includes('desc')),
+        quantity:    headers.findIndex(h => /qty|quant/.test(h)),
+        price:       headers.findIndex(h => /net\s*price|unit\s*price|price/.test(h)),
+        uom:         headers.findIndex(h => /\bum\b|uom|unit/.test(h)),
+        total:       headers.findIndex(h => h.includes('total')),
+      };
+
+      for (const row of table.bodyRows || []) {
+        const cells = (row.cells || []).map(c => getLayoutText(c.layout, fullText));
+        const itemNumber  = idx.item        >= 0 ? cells[idx.item]                        : '';
+        const description = idx.description >= 0 ? cells[idx.description]                 : '';
+        if (!itemNumber && !description) continue;
+
+        result.lineItems.push({
+          itemNumber,
+          description,
+          quantity:   idx.quantity >= 0 ? parseFloat(cells[idx.quantity])    || 1 : 1,
+          unitPrice:  idx.price    >= 0 ? parseAmount(cells[idx.price])          : 0,
+          uom:        idx.uom      >= 0 ? cells[idx.uom] || 'EA'                 : 'EA',
+          lineAmount: idx.total    >= 0 ? parseAmount(cells[idx.total])          : 0,
+        });
+      }
+
+      // Extract header fields from form key-value pairs
+      for (const field of page.formFields || []) {
+        const key = getLayoutText(field.fieldName,  fullText).toLowerCase();
+        const val = getLayoutText(field.fieldValue, fullText);
+        if (/bid.?no|bid.?num|quote.?no/.test(key))  result.header.docNumber   = val;
+        if (/bid.?date|quote.?date/.test(key))        result.header.docDate     = val;
+        if (/net.?total|subtotal/.test(key))          result.header.subtotal    = parseAmount(val);
+        if (/total/.test(key) && !/sub/.test(key))    result.header.totalAmount = parseAmount(val);
       }
     }
   }
@@ -336,20 +393,26 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
       parsed = parseExcelFile(file.buffer, file.originalname);
       console.log(`Excel parsed: ${file.originalname} — ${parsed.lineItems.length} line items`);
 
-    } else if (isPdf && DOCAI_PROCESSOR) {
-      // PDF: use Document AI
-      try {
-        const client = new DocumentProcessorServiceClient();
-        const name = `projects/${PROJECT_ID}/locations/${DOCAI_LOCATION}/processors/${DOCAI_PROCESSOR}`;
-        const [response] = await client.processDocument({
-          name,
-          rawDocument: { content: file.buffer.toString('base64'), mimeType: 'application/pdf' },
-        });
-        parsed = parseDocAiResponse(response.document);
-        docaiProcessed = true;
-        console.log(`Document AI processed: ${file.originalname} — ${parsed.lineItems.length} line items`);
-      } catch (e) {
-        console.error('Document AI error (non-fatal):', e.message);
+    } else if (isPdf) {
+      // Route to the right processor: Form Parser for quotes, Invoice Parser for invoices/POs
+      const isQuote      = docType === 'quote';
+      const processorId  = isQuote ? DOCAI_QUOTE_PROCESSOR : DOCAI_PROCESSOR;
+      if (processorId) {
+        try {
+          const client = new DocumentProcessorServiceClient();
+          const name = `projects/${PROJECT_ID}/locations/${DOCAI_LOCATION}/processors/${processorId}`;
+          const [response] = await client.processDocument({
+            name,
+            rawDocument: { content: file.buffer.toString('base64'), mimeType: 'application/pdf' },
+          });
+          parsed = isQuote
+            ? parseFormParserResponse(response.document)
+            : parseDocAiResponse(response.document);
+          docaiProcessed = true;
+          console.log(`Document AI (${isQuote ? 'form' : 'invoice'}) processed: ${file.originalname} — ${parsed.lineItems.length} line items`);
+        } catch (e) {
+          console.error('Document AI error (non-fatal):', e.message);
+        }
       }
     }
 
