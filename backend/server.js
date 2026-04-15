@@ -448,40 +448,49 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
           })
         );
 
-        // Process pages sequentially through Document AI
-        const allParsed = [];
-        for (let i = 0; i < pageBuffers.length; i++) {
-          try {
-            const [response] = await docaiClient.processDocument({
-              name: procName,
-              rawDocument: { content: pageBuffers[i].toString('base64'), mimeType: 'application/pdf' },
-            });
-            const p = isQuote
-              ? parseFormParserResponse(response.document)
-              : parseDocAiResponse(response.document);
-            if (p.header.docNumber || p.lineItems.length > 0) {
-              allParsed.push(p);
-              console.log(`Page ${i+1}/${numPages}: ${p.header.docNumber || '(no doc#)'} — ${p.lineItems.length} items`);
+        // Process pages through Document AI in parallel batches of 5
+        const BATCH = 5;
+        const allParsed = new Array(pageBuffers.length).fill(null);
+        for (let start = 0; start < pageBuffers.length; start += BATCH) {
+          const batchIdx = Array.from(
+            { length: Math.min(BATCH, pageBuffers.length - start) },
+            (_, k) => start + k
+          );
+          await Promise.all(batchIdx.map(async (i) => {
+            try {
+              const [response] = await docaiClient.processDocument({
+                name: procName,
+                rawDocument: { content: pageBuffers[i].toString('base64'), mimeType: 'application/pdf' },
+              });
+              const p = isQuote
+                ? parseFormParserResponse(response.document)
+                : parseDocAiResponse(response.document);
+              if (p.header.docNumber || p.lineItems.length > 0) {
+                allParsed[i] = p;
+                console.log(`Page ${i+1}/${numPages}: ${p.header.docNumber || '(no doc#)'} — ${p.lineItems.length} items`);
+              }
+            } catch (e) {
+              console.error(`Document AI error on page ${i+1}:`, e.message);
             }
-          } catch (e) {
-            console.error(`Document AI error on page ${i+1}:`, e.message);
-          }
+          }));
         }
+        // Remove null slots (pages with no extractable content)
+        const filteredParsed = allParsed.filter(p => p !== null);
 
-        docaiProcessed = allParsed.length > 0;
+        docaiProcessed = filteredParsed.length > 0;
         // Use first page result for the single-doc response fields; all pages saved below
-        if (allParsed.length > 0) parsed = allParsed[0];
+        if (filteredParsed.length > 0) parsed = filteredParsed[0];
 
         // 3. Save every extracted page to PostgreSQL
         const pool = await getPool();
         let totalItems = 0;
         let errors = [];
-        for (let i = 0; i < allParsed.length; i++) {
+        for (let i = 0; i < filteredParsed.length; i++) {
           const pageName = numPages === 1
             ? file.originalname
             : `${file.originalname} [page ${i+1}]`;
           try {
-            const r = await saveToDatabase(pool, docType, pageName, allParsed[i]);
+            const r = await saveToDatabase(pool, docType, pageName, filteredParsed[i]);
             totalItems += r.lineItemsInserted;
           } catch (e) {
             errors.push(`Page ${i+1}: ${e.message}`);
@@ -495,8 +504,8 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
           docType,
           fileType: 'pdf',
           pageCount: numPages,
-          invoicesProcessed: allParsed.length,
-          dbSaved: allParsed.length > 0 && errors.length < allParsed.length,
+          invoicesProcessed: filteredParsed.length,
+          dbSaved: filteredParsed.length > 0 && errors.length < filteredParsed.length,
           dbError: errors.length > 0 ? errors.join('; ') : null,
           documentAiProcessed: docaiProcessed,
           lineItemsExtracted: totalItems,

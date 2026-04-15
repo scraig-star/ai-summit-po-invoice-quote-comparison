@@ -48,7 +48,7 @@ jobs:
           service: procurement-api
           region: ${{ env.REGION }}
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/procurement-api:${{ github.sha }}
-          flags: --allow-unauthenticated --port=8080 --memory=512Mi --cpu=1 --min-instances=0 --max-instances=3 --add-cloudsql-instances=agent-space-466318:us-west1:procurement-db
+          flags: --allow-unauthenticated --port=8080 --memory=512Mi --cpu=1 --min-instances=0 --max-instances=3 --timeout=900 --add-cloudsql-instances=agent-space-466318:us-west1:procurement-db
           env_vars: |
             PROJECT_ID=${{ env.PROJECT_ID }}
             BUCKET_NAME=agent-space-466318-procurement-docs
