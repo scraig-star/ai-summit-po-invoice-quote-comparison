@@ -619,7 +619,13 @@ export default function ProcurementApp() {
 
   // ── Item Catalog ──────────────────────────────────────────────────────────────
   const ItemCatalogTab = () => {
-    const allItems = quotes.flatMap(q => q.lineItems.map(li => ({ ...li, bidNumber: q.bidNumber, bidDate: q.bidDate, vendor: q.vendor })));
+    const allItems = quotes
+      .flatMap(q => q.lineItems.map(li => ({ ...li, bidNumber: q.bidNumber, bidDate: q.bidDate, vendor: q.vendor })))
+      .sort((a, b) => {
+        const v = (a.vendor || '').localeCompare(b.vendor || '');
+        if (v !== 0) return v;
+        return (a.bidNumber || '').localeCompare(b.bidNumber || '');
+      });
     const filtered = allItems.filter(item =>
       !itemSearch ||
       item.itemNumber?.toLowerCase().includes(itemSearch.toLowerCase()) ||
@@ -673,6 +679,68 @@ export default function ProcurementApp() {
             </table>
           </div>
         </div>
+      </div>
+    );
+  };
+
+  // ── Clear data panel ─────────────────────────────────────────────────────────
+  const ClearDataPanel = () => {
+    const [clearing, setClearing] = useState(false);
+    const [result, setResult] = useState(null);
+    const [confirm, setConfirm] = useState(false);
+
+    const doClear = async () => {
+      setClearing(true);
+      setResult(null);
+      try {
+        const res = await fetch(`${cloudConfig.apiEndpoint}/api/admin/clear-data`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        setResult({ ok: true, data });
+        // Reset local state
+        setInvoices([]);
+        setQuotes([]);
+        setComparisonData([]);
+      } catch (e) {
+        setResult({ ok: false, error: e.message });
+      } finally {
+        setClearing(false);
+        setConfirm(false);
+      }
+    };
+
+    return (
+      <div className="bg-white border border-red-100 rounded-xl p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-gray-700">Data Management</div>
+            <div className="text-xs text-gray-400 mt-0.5">Remove all invoices and quotes from the database to start fresh.</div>
+          </div>
+          {!confirm ? (
+            <button onClick={() => setConfirm(true)}
+              className="px-4 py-2 text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+              Clear All Data
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-red-600 font-medium">Delete all records?</span>
+              <button onClick={doClear} disabled={clearing}
+                className="px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50">
+                {clearing ? 'Deleting…' : 'Confirm Delete'}
+              </button>
+              <button onClick={() => setConfirm(false)} className="px-3 py-1.5 text-sm text-gray-500 border border-gray-300 rounded-lg hover:bg-gray-50">
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+        {result && (
+          <div className={`mt-3 text-xs px-3 py-2 rounded-lg ${result.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+            {result.ok
+              ? `Deleted: ${result.data.deleted.invoices} invoices, ${result.data.deleted.invoiceLineItems} line items, ${result.data.deleted.quotes} quotes, ${result.data.deleted.quoteLineItems} quote items.`
+              : `Error: ${result.error}`}
+          </div>
+        )}
       </div>
     );
   };
@@ -777,6 +845,9 @@ export default function ProcurementApp() {
             ))}
           </div>
         </div>
+
+        {/* ── Data management ── */}
+        <ClearDataPanel />
 
         {uploadQueue.length > 0 && (
           <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">

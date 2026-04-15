@@ -638,15 +638,19 @@ app.get('/api/comparison', async (_req, res) => {
         q.bid_number                                AS "quoteNumber",
         qli.net_price                               AS "quotedPrice",
         best.invoice_number                         AS "invoiceNumber",
-        best.unit_price                             AS "invoicePrice",
-        CASE WHEN best.unit_price IS NOT NULL AND qli.net_price > 0
+        -- Treat $0 invoice price as no price (same as unmatched)
+        CASE WHEN best.unit_price > 0 THEN best.unit_price ELSE NULL END AS "invoicePrice",
+        -- Variance only when BOTH prices are real (> 0)
+        CASE WHEN best.unit_price > 0 AND qli.net_price > 0
           THEN ROUND(((best.unit_price - qli.net_price) / qli.net_price * 100)::numeric, 2)
           ELSE NULL
         END AS variance,
+        -- Status only when both prices present; $0 invoice = NOT_INVOICED
         CASE
-          WHEN best.unit_price IS NULL                      THEN 'NOT_INVOICED'
-          WHEN best.unit_price > qli.net_price * 1.001     THEN 'OVER_QUOTE'
-          WHEN best.unit_price < qli.net_price * 0.999     THEN 'UNDER_QUOTE'
+          WHEN best.unit_price IS NULL OR best.unit_price = 0  THEN 'NOT_INVOICED'
+          WHEN qli.net_price = 0                               THEN 'MATCH'
+          WHEN best.unit_price > qli.net_price * 1.001         THEN 'OVER_QUOTE'
+          WHEN best.unit_price < qli.net_price * 0.999         THEN 'UNDER_QUOTE'
           ELSE 'MATCH'
         END AS status
       FROM procurement.quote_line_items qli
@@ -670,14 +674,48 @@ app.get('/api/comparison', async (_req, res) => {
         LIMIT 1
       ) best ON true
       ORDER BY
-        CASE WHEN best.unit_price > qli.net_price * 1.001 THEN 0
-             WHEN best.unit_price < qli.net_price * 0.999 THEN 1
-             WHEN best.unit_price IS NULL THEN 3
-             ELSE 2 END,
+        CASE WHEN best.unit_price > 0 AND best.unit_price > qli.net_price * 1.001 THEN 0
+             WHEN best.unit_price > 0 AND best.unit_price < qli.net_price * 0.999 THEN 1
+             WHEN best.unit_price > 0 THEN 2
+             ELSE 3 END,
         qli.item_number
       LIMIT 500
     `);
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: clear all document data ───────────────────────────────────────────
+app.delete('/api/admin/clear-data', async (_req, res) => {
+  try {
+    const pool = await getPool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET search_path TO procurement');
+      const r1 = await client.query('DELETE FROM invoice_line_items');
+      const r2 = await client.query('DELETE FROM invoices');
+      const r3 = await client.query('DELETE FROM quote_line_items');
+      const r4 = await client.query('DELETE FROM quotes');
+      await client.query('COMMIT');
+      console.log(`Data cleared: ${r2.rowCount} invoices, ${r4.rowCount} quotes`);
+      res.json({
+        success: true,
+        deleted: {
+          invoiceLineItems: r1.rowCount,
+          invoices:         r2.rowCount,
+          quoteLineItems:   r3.rowCount,
+          quotes:           r4.rowCount,
+        },
+      });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
