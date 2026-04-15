@@ -631,33 +631,48 @@ app.get('/api/comparison', async (_req, res) => {
     const pool = await getPool();
     const { rows } = await pool.query(`
       SELECT
-        qli.item_number                       AS "itemNumber",
+        qli.item_number                               AS "itemNumber",
         qli.description,
-        COALESCE(v.vendor_name, 'Unknown')    AS vendor,
+        COALESCE(v.vendor_name, best.vendor_name, 'Unknown') AS vendor,
         qli.uom,
-        q.bid_number                          AS "quoteNumber",
-        qli.net_price                         AS "quotedPrice",
-        i.invoice_number                      AS "invoiceNumber",
-        ili.unit_price                        AS "invoicePrice",
-        CASE WHEN ili.unit_price IS NOT NULL AND qli.net_price > 0
-          THEN ROUND(((ili.unit_price - qli.net_price) / qli.net_price * 100)::numeric, 2)
+        q.bid_number                                AS "quoteNumber",
+        qli.net_price                               AS "quotedPrice",
+        best.invoice_number                         AS "invoiceNumber",
+        best.unit_price                             AS "invoicePrice",
+        CASE WHEN best.unit_price IS NOT NULL AND qli.net_price > 0
+          THEN ROUND(((best.unit_price - qli.net_price) / qli.net_price * 100)::numeric, 2)
           ELSE NULL
         END AS variance,
         CASE
-          WHEN ili.unit_price IS NULL               THEN 'NOT_INVOICED'
-          WHEN ili.unit_price > qli.net_price * 1.001 THEN 'OVER_QUOTE'
-          WHEN ili.unit_price < qli.net_price * 0.999 THEN 'UNDER_QUOTE'
+          WHEN best.unit_price IS NULL                      THEN 'NOT_INVOICED'
+          WHEN best.unit_price > qli.net_price * 1.001     THEN 'OVER_QUOTE'
+          WHEN best.unit_price < qli.net_price * 0.999     THEN 'UNDER_QUOTE'
           ELSE 'MATCH'
         END AS status
       FROM procurement.quote_line_items qli
       JOIN procurement.quotes q ON qli.quote_id = q.quote_id
       LEFT JOIN procurement.vendors v ON q.vendor_id = v.vendor_id
-      LEFT JOIN procurement.invoice_line_items ili ON ili.item_number = qli.item_number
-      LEFT JOIN procurement.invoices i ON ili.invoice_id = i.invoice_id
+      -- For each quote line item, find the single most-recent invoice line
+      -- that matches by item_number (case-insensitive, trimmed).
+      -- LATERAL + LIMIT 1 prevents duplicate rows when an item appears
+      -- in multiple invoices.
+      LEFT JOIN LATERAL (
+        SELECT
+          ili.unit_price,
+          i2.invoice_number,
+          i2.invoice_date,
+          iv.vendor_name
+        FROM procurement.invoice_line_items ili
+        JOIN procurement.invoices i2 ON i2.invoice_id = ili.invoice_id
+        LEFT JOIN procurement.vendors iv ON i2.vendor_id = iv.vendor_id
+        WHERE UPPER(TRIM(ili.item_number)) = UPPER(TRIM(qli.item_number))
+        ORDER BY i2.invoice_date DESC NULLS LAST
+        LIMIT 1
+      ) best ON true
       ORDER BY
-        CASE WHEN ili.unit_price > qli.net_price * 1.001 THEN 0
-             WHEN ili.unit_price < qli.net_price * 0.999 THEN 1
-             WHEN ili.unit_price IS NULL THEN 3
+        CASE WHEN best.unit_price > qli.net_price * 1.001 THEN 0
+             WHEN best.unit_price < qli.net_price * 0.999 THEN 1
+             WHEN best.unit_price IS NULL THEN 3
              ELSE 2 END,
         qli.item_number
       LIMIT 500
