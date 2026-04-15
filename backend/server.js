@@ -155,11 +155,16 @@ function parseExcelFile(buffer, fileName) {
 // ── Save parsed document to PostgreSQL ───────────────────────────────────────
 const trunc = (s, n = 500) => s ? String(s).substring(0, n) : s;
 
-// Validate dates from Document AI before passing to PostgreSQL
+// Validate dates from Document AI before passing to PostgreSQL.
+// Always returns ISO YYYY-MM-DD (not the original string) so garbage
+// like "51 APR 06 2026" never reaches PostgreSQL even if V8 parses it.
 function safeDate(d) {
   if (!d) return null;
   const dt = new Date(d);
-  return isNaN(dt.getTime()) ? null : d;
+  if (isNaN(dt.getTime())) return null;
+  const y = dt.getFullYear();
+  if (y < 2000 || y > 2100) return null;   // sanity-check year
+  return dt.toISOString().split('T')[0];    // YYYY-MM-DD
 }
 
 // Widen columns once per server instance — guaranteed before first insert
