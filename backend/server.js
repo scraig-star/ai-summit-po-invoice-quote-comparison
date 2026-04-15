@@ -459,8 +459,14 @@ async function runMigrations() {
     const client = await pool.connect();
     try {
       await client.query('SET search_path TO procurement');
-      await client.query('ALTER TABLE invoices ALTER COLUMN source_filename TYPE TEXT');
-      await client.query('ALTER TABLE quotes   ALTER COLUMN source_filename TYPE TEXT');
+      // Widen all string columns that can receive long filenames or parsed text
+      const alters = [
+        'ALTER TABLE invoices ALTER COLUMN source_filename  TYPE TEXT',
+        'ALTER TABLE invoices ALTER COLUMN invoice_number   TYPE TEXT',
+        'ALTER TABLE quotes   ALTER COLUMN source_filename  TYPE TEXT',
+        'ALTER TABLE quotes   ALTER COLUMN bid_number       TYPE TEXT',
+      ];
+      for (const sql of alters) await client.query(sql);
       console.log('Migrations complete');
     } finally {
       client.release();
