@@ -210,29 +210,26 @@ function parseFormParserResponse(document) {
       result.header.vendorName = result.header.vendorName || text;
   }
 
-  // ── Fallback: scan raw document text for prominent all-caps company name ──────
-  // Catches "FERGUSON ENTERPRISES #1001" style headers that aren't form fields.
+  // ── Fallback: pattern-based vendor extraction from raw document text ──────────
   if (!result.header.vendorName && fullText) {
-    const STOP = new Set([
-      'BID','NO','DATE','PRICE','ITEM','SHIP','PAGE','FROM','BILL',
-      'CUST','JOB','TERMS','PHONE','FAX','NET','TOTAL','QUOTE',
-      'QUANTITY','QTY','AMOUNT','DESCRIPTION','DESC','INVOICED',
-      'PURCHASE','ORDER','INVOICE',
-    ]);
-    // Look for 1-5 consecutive all-caps words in the first 800 chars
-    const topText = fullText.slice(0, 800);
-    const allCapsPhrases = [...topText.matchAll(/\b([A-Z]{2,}(?:\s+[A-Z&]{2,}){0,4})\b/g)]
-      .map(m => m[1].trim())
-      .filter(phrase => {
-        const words = phrase.split(/\s+/);
-        // Reject if all words are stop words, or phrase is too short
-        return phrase.length >= 4 && !words.every(w => STOP.has(w));
-      });
-    if (allCapsPhrases.length > 0) {
-      // Prefer the longest match (company names tend to be multi-word)
-      const best = allCapsPhrases.sort((a, b) => b.split(' ').length - a.split(' ').length)[0];
-      // Strip trailing store/branch numbers like "#1001"
-      result.header.vendorName = best.replace(/\s*#\d+$/, '').trim();
+    // Pattern 1: company name appearing immediately before "Price Quotation"
+    // e.g. "FERGUSON ENTERPRISES #1001\nPrice Quotation"
+    const preQuote = fullText.match(/([A-Za-z][A-Za-z\s&,.']{3,60}?)\s*(?:#\d+\s*)?\n?\s*Price\s*Quotation/i);
+    if (preQuote) {
+      const candidate = preQuote[1].replace(/\s*#\d+$/, '').trim();
+      if (candidate.length > 2 && !/^\d/.test(candidate)) {
+        result.header.vendorName = candidate;
+      }
+    }
+
+    // Pattern 2: extract company from email domain in document
+    // e.g. "kevin@ferguson.com" → "Ferguson"
+    if (!result.header.vendorName) {
+      const emailMatch = fullText.match(/[\w.+-]+@([\w-]+)\.(com|net|org|co)\b/i);
+      if (emailMatch) {
+        const domain = emailMatch[1];
+        result.header.vendorName = domain.charAt(0).toUpperCase() + domain.slice(1).toLowerCase();
+      }
     }
   }
 
