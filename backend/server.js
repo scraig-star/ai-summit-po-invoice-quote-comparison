@@ -202,6 +202,40 @@ function parseFormParserResponse(document) {
       }
     }
   }
+
+  // ── Also check document-level entities (some Form Parser versions return these) ──
+  for (const entity of document.entities || []) {
+    const text = entity.mentionText?.trim() || '';
+    if (['vendor_name', 'supplier_name', 'receiver_name'].includes(entity.type) && text)
+      result.header.vendorName = result.header.vendorName || text;
+  }
+
+  // ── Fallback: scan raw document text for prominent all-caps company name ──────
+  // Catches "FERGUSON ENTERPRISES #1001" style headers that aren't form fields.
+  if (!result.header.vendorName && fullText) {
+    const STOP = new Set([
+      'BID','NO','DATE','PRICE','ITEM','SHIP','PAGE','FROM','BILL',
+      'CUST','JOB','TERMS','PHONE','FAX','NET','TOTAL','QUOTE',
+      'QUANTITY','QTY','AMOUNT','DESCRIPTION','DESC','INVOICED',
+      'PURCHASE','ORDER','INVOICE',
+    ]);
+    // Look for 1-5 consecutive all-caps words in the first 800 chars
+    const topText = fullText.slice(0, 800);
+    const allCapsPhrases = [...topText.matchAll(/\b([A-Z]{2,}(?:\s+[A-Z&]{2,}){0,4})\b/g)]
+      .map(m => m[1].trim())
+      .filter(phrase => {
+        const words = phrase.split(/\s+/);
+        // Reject if all words are stop words, or phrase is too short
+        return phrase.length >= 4 && !words.every(w => STOP.has(w));
+      });
+    if (allCapsPhrases.length > 0) {
+      // Prefer the longest match (company names tend to be multi-word)
+      const best = allCapsPhrases.sort((a, b) => b.split(' ').length - a.split(' ').length)[0];
+      // Strip trailing store/branch numbers like "#1001"
+      result.header.vendorName = best.replace(/\s*#\d+$/, '').trim();
+    }
+  }
+
   return result;
 }
 
@@ -250,34 +284,41 @@ function parseExcelFile(buffer, fileName) {
 // ── Save parsed document to PostgreSQL ───────────────────────────────────────
 const trunc = (s, n = 500) => s ? String(s).substring(0, n) : s;
 
-// Find or create a vendor by name; returns vendor_id or null if name is blank/unknown.
+// Find or create a vendor by name; returns vendor_id or null.
+// Uses a SAVEPOINT so any failure rolls back only the vendor operation
+// without aborting the outer transaction.
 async function findOrCreateVendor(client, vendorName) {
   if (!vendorName || vendorName.trim().toLowerCase() === 'unknown') return null;
   const name = vendorName.trim();
   const upper = name.toUpperCase();
-  // Try exact match (case-insensitive)
-  const existing = await client.query(
-    `SELECT vendor_id FROM procurement.vendors WHERE UPPER(vendor_name) = $1 LIMIT 1`,
-    [upper]
-  );
-  if (existing.rows.length > 0) return existing.rows[0].vendor_id;
-  // Create new vendor record
-  const code = upper.replace(/[^A-Z0-9]/g, '').substring(0, 20) || 'VENDOR';
+
   try {
-    const { rows } = await client.query(
-      `INSERT INTO procurement.vendors (vendor_name, vendor_code) VALUES ($1, $2)
-       ON CONFLICT (vendor_code) DO UPDATE SET vendor_name = EXCLUDED.vendor_name
-       RETURNING vendor_id`,
-      [name, code]
+    await client.query('SAVEPOINT vendor_upsert');
+
+    // Check for existing vendor (case-insensitive)
+    const existing = await client.query(
+      `SELECT vendor_id FROM procurement.vendors WHERE UPPER(vendor_name) = $1 LIMIT 1`,
+      [upper]
     );
-    return rows[0].vendor_id;
-  } catch {
-    // If vendors table has no unique constraint on code, plain insert
+    if (existing.rows.length > 0) {
+      await client.query('RELEASE SAVEPOINT vendor_upsert');
+      return existing.rows[0].vendor_id;
+    }
+
+    // Insert using only vendor_name to avoid unknown column constraints
     const { rows } = await client.query(
       `INSERT INTO procurement.vendors (vendor_name) VALUES ($1) RETURNING vendor_id`,
       [name]
     );
+    await client.query('RELEASE SAVEPOINT vendor_upsert');
     return rows[0].vendor_id;
+
+  } catch (e) {
+    // Roll back only the vendor savepoint — outer transaction stays intact
+    console.warn(`findOrCreateVendor failed for "${name}", continuing without vendor:`, e.message);
+    try { await client.query('ROLLBACK TO SAVEPOINT vendor_upsert'); } catch {}
+    try { await client.query('RELEASE SAVEPOINT vendor_upsert'); } catch {}
+    return null;
   }
 }
 
