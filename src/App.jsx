@@ -693,7 +693,12 @@ export default function ProcurementApp() {
                                   <td className="px-4 py-2 text-gray-500 text-xs">{item.invoiceNumber || '—'}</td>
                                   <td className="px-4 py-2 text-right text-gray-800">{item.invoicePrice != null ? `$${item.invoicePrice.toFixed(3)}` : '—'}</td>
                                   <td className={`px-4 py-2 text-right font-semibold text-xs ${item.variance > 0 ? 'text-red-600' : item.variance < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                    {item.variance != null ? `${item.variance > 0 ? '+' : ''}${item.variance.toFixed(2)}%` : '—'}
+                                    {item.variance != null && item.invoicePrice != null ? (
+                                      <div>
+                                        <div>{item.variance > 0 ? '+' : ''}{fmt$(item.invoicePrice - item.quotedPrice)}</div>
+                                        <div className="opacity-70 font-normal">{item.variance > 0 ? '+' : ''}{item.variance.toFixed(2)}%</div>
+                                      </div>
+                                    ) : '—'}
                                   </td>
                                   <td className="px-4 py-2"><StatusBadge status={item.status} /></td>
                                 </tr>
