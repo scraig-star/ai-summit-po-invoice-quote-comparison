@@ -180,8 +180,8 @@ export default function ProcurementApp() {
       const cmp = compMap[li.itemNumber?.toUpperCase().trim()];
       if (cmp?.quotedPrice > 0 && li.unitPrice > 0) {
         const qty = li.qtyShipped || li.qtyOrdered || 0;
-        invQuotedTotal  += cmp.quotedPrice * qty;
-        invMatchedAmount += li.amount;
+        invQuotedTotal   += cmp.quotedPrice * qty;
+        invMatchedAmount += li.unitPrice * qty;   // use unit price × qty (same basis as quoted side)
       }
     });
 
@@ -447,8 +447,9 @@ export default function ProcurementApp() {
               {expandedPOs.has(po.poNumber) && (
                 <div className="border-t border-gray-100">
                   {po.invoices.map(inv => {
-                    const invVariance = inv.quotedTotal > 0 ? inv.matchedAmount - inv.quotedTotal : null;
-                    const invVariancePct = inv.quotedTotal > 0 ? (invVariance / inv.quotedTotal * 100) : null;
+                    const invTotal = parseFloat(inv.total || 0);
+                    const invVariance = inv.quotedTotal > 0 && invTotal >= 0 ? inv.matchedAmount - inv.quotedTotal : null;
+                    const invVariancePct = invVariance !== null ? (invVariance / inv.quotedTotal * 100) : null;
 
                     return (
                       <div key={inv.id} className="border-b border-gray-50 last:border-0">
@@ -520,7 +521,7 @@ export default function ProcurementApp() {
                                         {variance !== null ? (
                                           <div>
                                             <div>{variance > 0 ? '+' : ''}{variance.toFixed(2)}%</div>
-                                            <div className="opacity-70 font-normal">{variance > 0 ? '+' : ''}{fmt$((invoicePrice - quotedPrice) * (li.qtyShipped || li.qtyOrdered || 0))}</div>
+                                            <div className="opacity-70 font-normal">{variance > 0 ? '+' : ''}{fmt$(invoicePrice - quotedPrice)}/unit</div>
                                           </div>
                                         ) : '—'}
                                       </td>
@@ -534,8 +535,8 @@ export default function ProcurementApp() {
                                   const quotedT   = inv.quotedTotal;
                                   const matchedT  = inv.matchedAmount; // invoiced amount for matched items only
                                   const invoicedT = parseFloat(inv.total);
-                                  const varT    = quotedT > 0 ? matchedT - quotedT : null;
-                                  const varTpct = quotedT > 0 ? (varT / quotedT * 100) : null;
+                                  const varT    = quotedT > 0 && invoicedT >= 0 ? matchedT - quotedT : null;
+                                  const varTpct = varT !== null ? (varT / quotedT * 100) : null;
                                   return (
                                     <tr className="border-t-2 border-gray-200 bg-gray-100/60 font-semibold">
                                       <td colSpan={6} className="pt-2 pb-1.5 text-xs text-gray-500 uppercase tracking-wide">Totals</td>
