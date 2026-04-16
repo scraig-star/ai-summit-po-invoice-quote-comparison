@@ -70,6 +70,21 @@ function extractFilenameMetadata(fileName) {
   };
 }
 
+// ── Extract vendor name from filename as fallback ─────────────────────────────
+// Handles patterns like:
+//   "60140018-Ferguson Enterprises Inc #794-230751-019.pdf"
+//   "Ferguson_Quote_B940987.pdf"
+function extractVendorFromFilename(fileName) {
+  const base = fileName.replace(/\.[^.]+$/, '').trim();
+  // Pattern: {digits}-{Vendor Name} #... or {digits}-{Vendor Name}-{quote#}
+  const m1 = base.match(/^\d[\d\s]*[-–]\s*(.+?)\s*(?:#[\d-]|\bquote\b|\bbid\b)/i);
+  if (m1 && m1[1].trim().length > 1) return m1[1].trim();
+  // Pattern: {Vendor Name} #quote or {Vendor Name} Quote ...
+  const m2 = base.match(/^(.+?)\s*(?:#[A-Z]?\d|\bquote\b|\bbid\b)/i);
+  if (m2 && m2[1].trim().length > 1) return m2[1].trim();
+  return null;
+}
+
 // ── Document AI parser ────────────────────────────────────────────────────────
 function parseDocAiResponse(document) {
   const result = { header: {}, lineItems: [] };
@@ -326,7 +341,7 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
       }
       if (!skipped) {
         const fnMeta = extractFilenameMetadata(fileName);
-        const vendorId = await findOrCreateVendor(client, parsed.header.vendorName);
+        const vendorId = await findOrCreateVendor(client, parsed.header.vendorName || extractVendorFromFilename(fileName));
         const { rows } = await client.query(
           `INSERT INTO invoices
              (invoice_number, invoice_date, subtotal, tax_amount, total_amount, source_filename, po_number, job_number, status, vendor_id)
@@ -376,7 +391,7 @@ async function saveToDatabase(pool, docType, fileName, parsed) {
         await client.query('DELETE FROM quotes WHERE quote_id = $1', [dup.rows[0].quote_id]);
       }
       if (!skipped) {
-        const vendorId = await findOrCreateVendor(client, parsed.header.vendorName);
+        const vendorId = await findOrCreateVendor(client, parsed.header.vendorName || extractVendorFromFilename(fileName));
         const { rows } = await client.query(
           `INSERT INTO quotes
              (bid_number, bid_date, net_total, total_amount, source_filename, status, vendor_id)
