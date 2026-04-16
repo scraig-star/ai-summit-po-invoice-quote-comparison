@@ -735,45 +735,47 @@ app.get('/api/comparison', async (_req, res) => {
         q.bid_number                                AS "quoteNumber",
         qli.net_price                               AS "quotedPrice",
         best.invoice_number                         AS "invoiceNumber",
-        -- Treat $0 invoice price as no price (same as unmatched)
-        CASE WHEN best.unit_price > 0 THEN best.unit_price ELSE NULL END AS "invoicePrice",
+        -- Weighted avg unit cost across all non-credit-memo invoice lines ($/qty)
+        CASE WHEN best.avg_unit_price > 0 THEN best.avg_unit_price ELSE NULL END AS "invoicePrice",
         -- Variance only when BOTH prices are real (> 0)
-        CASE WHEN best.unit_price > 0 AND qli.net_price > 0
-          THEN ROUND(((best.unit_price - qli.net_price) / qli.net_price * 100)::numeric, 2)
+        CASE WHEN best.avg_unit_price > 0 AND qli.net_price > 0
+          THEN ROUND(((best.avg_unit_price - qli.net_price) / qli.net_price * 100)::numeric, 2)
           ELSE NULL
         END AS variance,
-        -- Status only when both prices present; $0 invoice = NOT_INVOICED
+        -- Status
         CASE
-          WHEN best.unit_price IS NULL OR best.unit_price = 0  THEN 'NOT_INVOICED'
-          WHEN qli.net_price = 0                               THEN 'MATCH'
-          WHEN best.unit_price > qli.net_price * 1.001         THEN 'OVER_QUOTE'
-          WHEN best.unit_price < qli.net_price * 0.999         THEN 'UNDER_QUOTE'
+          WHEN best.avg_unit_price IS NULL OR best.avg_unit_price = 0  THEN 'NOT_INVOICED'
+          WHEN qli.net_price = 0                                        THEN 'NOT_QUOTED'
+          WHEN best.avg_unit_price > qli.net_price * 1.001              THEN 'OVER_QUOTE'
+          WHEN best.avg_unit_price < qli.net_price * 0.999              THEN 'UNDER_QUOTE'
           ELSE 'MATCH'
         END AS status
       FROM procurement.quote_line_items qli
       JOIN procurement.quotes q ON qli.quote_id = q.quote_id
       LEFT JOIN procurement.vendors v ON q.vendor_id = v.vendor_id
-      -- For each quote line item, find the single most-recent invoice line
-      -- that matches by item_number (case-insensitive, trimmed).
-      -- LATERAL + LIMIT 1 prevents duplicate rows when an item appears
-      -- in multiple invoices.
+      -- Aggregate all non-credit-memo invoice lines for this item number:
+      -- avg unit cost = SUM(line_amount) / SUM(qty_shipped)
       LEFT JOIN LATERAL (
         SELECT
-          ili.unit_price,
-          i2.invoice_number,
-          i2.invoice_date,
-          iv.vendor_name
+          SUM(ili.line_amount) / NULLIF(SUM(ili.qty_shipped), 0) AS avg_unit_price,
+          (SELECT i3.invoice_number
+           FROM procurement.invoice_line_items ili3
+           JOIN procurement.invoices i3 ON i3.invoice_id = ili3.invoice_id
+           WHERE UPPER(TRIM(ili3.item_number)) = UPPER(TRIM(qli.item_number))
+             AND ili3.qty_shipped > 0
+           ORDER BY i3.invoice_date DESC NULLS LAST
+           LIMIT 1) AS invoice_number,
+          MAX(iv.vendor_name) AS vendor_name
         FROM procurement.invoice_line_items ili
         JOIN procurement.invoices i2 ON i2.invoice_id = ili.invoice_id
         LEFT JOIN procurement.vendors iv ON i2.vendor_id = iv.vendor_id
         WHERE UPPER(TRIM(ili.item_number)) = UPPER(TRIM(qli.item_number))
-        ORDER BY i2.invoice_date DESC NULLS LAST
-        LIMIT 1
+          AND ili.qty_shipped > 0        -- exclude credit memo / zero-qty lines
       ) best ON true
       ORDER BY
-        CASE WHEN best.unit_price > 0 AND best.unit_price > qli.net_price * 1.001 THEN 0
-             WHEN best.unit_price > 0 AND best.unit_price < qli.net_price * 0.999 THEN 1
-             WHEN best.unit_price > 0 THEN 2
+        CASE WHEN best.avg_unit_price > 0 AND best.avg_unit_price > qli.net_price * 1.001 THEN 0
+             WHEN best.avg_unit_price > 0 AND best.avg_unit_price < qli.net_price * 0.999 THEN 1
+             WHEN best.avg_unit_price > 0 THEN 2
              ELSE 3 END,
         qli.item_number
       LIMIT 500

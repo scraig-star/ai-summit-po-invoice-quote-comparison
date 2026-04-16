@@ -50,6 +50,7 @@ export default function ProcurementApp() {
 
   // ── UI ────────────────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('po-overview');
+  const [cmpSearch, setCmpSearch] = useState('');
   const [expandedPOs, setExpandedPOs] = useState(new Set());
   const [expandedInvoices, setExpandedInvoices] = useState(new Set());
   const [showSettings, setShowSettings] = useState(false);
@@ -281,6 +282,7 @@ export default function ProcurementApp() {
       OVER_QUOTE:       'bg-red-50 text-red-700 border-red-200',
       UNDER_QUOTE:      'bg-green-50 text-green-700 border-green-200',
       NOT_INVOICED:     'bg-gray-50 text-gray-500 border-gray-200',
+      NOT_QUOTED:       'bg-amber-50 text-amber-600 border-amber-200',
       MATCH:            'bg-sky-50 text-sky-600 border-sky-200',
     }[status] || 'bg-gray-50 text-gray-600 border-gray-200';
     return <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded border ${s}`}>{status.replace(/_/g, ' ')}</span>;
@@ -509,7 +511,14 @@ export default function ProcurementApp() {
                                     : null;
                                   return (
                                     <tr key={i} className={`border-b border-gray-100 last:border-0 ${variance > 0.1 ? 'bg-red-50/40' : variance !== null && variance < -0.1 ? 'bg-green-50/40' : ''}`}>
-                                      <td className="py-1.5 font-mono text-xs font-semibold" style={{ color: NAVY }}>{li.itemNumber}</td>
+                                      <td className="py-1.5 font-mono text-xs font-semibold">
+                                        <button
+                                          className="hover:underline focus:outline-none"
+                                          style={{ color: NAVY }}
+                                          title="View in Quote vs Invoice"
+                                          onClick={() => { setCmpSearch(li.itemNumber || ''); setActiveTab('comparison'); }}
+                                        >{li.itemNumber}</button>
+                                      </td>
                                       <td className="py-1.5 text-gray-600 max-w-xs truncate pr-4">{li.description}</td>
                                       <td className="py-1.5 text-center text-gray-600">{li.qtyOrdered}</td>
                                       <td className="py-1.5 text-center text-gray-600">{li.qtyShipped}</td>
@@ -572,7 +581,6 @@ export default function ProcurementApp() {
 
   // ── Quote vs Invoice — grouped by vendor → quote number ─────────────────────
   const ComparisonTab = () => {
-    const [cmpSearch, setCmpSearch] = useState('');
     const [expandedGroups, setExpandedGroups] = useState(new Set());
     const toggleGroup = (key) => setExpandedGroups(prev => {
       const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
