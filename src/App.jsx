@@ -176,13 +176,16 @@ export default function ProcurementApp() {
     // Only include items that have BOTH an invoice price and a quoted price.
     // This keeps the comparison apples-to-apples and prevents a misleading
     // variance when most items are unmatched.
+    // Use li.amount as the matched basis and scale the quoted side by the
+    // unit-price ratio — this absorbs UoM multipliers (e.g. "C" = per 100)
+    // that are already baked into the line amount.
     let invQuotedTotal = 0, invMatchedAmount = 0;
     inv.lineItems.forEach(li => {
       const cmp = compMap[li.itemNumber?.toUpperCase().trim()];
-      if (cmp?.quotedPrice > 0 && li.unitPrice > 0) {
-        const qty = li.qtyShipped || li.qtyOrdered || 0;
-        invQuotedTotal   += cmp.quotedPrice * qty;
-        invMatchedAmount += li.unitPrice * qty;   // use unit price × qty (same basis as quoted side)
+      const amt = parseFloat(li.amount) || 0;
+      if (cmp?.quotedPrice > 0 && li.unitPrice > 0 && amt !== 0) {
+        invMatchedAmount += amt;
+        invQuotedTotal   += amt * (cmp.quotedPrice / li.unitPrice);
       }
     });
 
@@ -434,10 +437,10 @@ export default function ProcurementApp() {
                   {poVariance !== null && (
                     <div className="text-right hidden md:block">
                       <div className={`text-sm font-semibold ${poVariance > 0.01 ? 'text-red-600' : poVariance < -0.01 ? 'text-green-600' : 'text-gray-400'}`}>
-                        {poVariance > 0 ? '+' : ''}{fmt$(poVariance)}
+                        {poVariance > 0 ? '+' : poVariance < 0 ? '−' : ''}{fmt$(poVariance)}
                       </div>
                       <div className={`text-xs ${poVariance > 0.01 ? 'text-red-400' : poVariance < -0.01 ? 'text-green-400' : 'text-gray-300'}`}>
-                        {poVariancePct > 0 ? '+' : ''}{poVariancePct.toFixed(1)}%
+                        {poVariancePct > 0 ? '+' : poVariancePct < 0 ? '−' : ''}{Math.abs(poVariancePct).toFixed(1)}%
                       </div>
                     </div>
                   )}
@@ -470,7 +473,7 @@ export default function ProcurementApp() {
                                 <div className="text-xs text-gray-400">Quoted: {fmt$(inv.quotedTotal)}</div>
                                 {invVariance !== null && (
                                   <div className={`text-xs font-medium ${invVariance > 0.01 ? 'text-red-500' : invVariance < -0.01 ? 'text-green-500' : 'text-gray-400'}`}>
-                                    {invVariance > 0 ? '+' : ''}{fmt$(invVariance)} ({invVariancePct > 0 ? '+' : ''}{invVariancePct.toFixed(1)}%)
+                                    {invVariance > 0 ? '+' : invVariance < 0 ? '−' : ''}{fmt$(invVariance)} ({invVariancePct > 0 ? '+' : invVariancePct < 0 ? '−' : ''}{Math.abs(invVariancePct).toFixed(1)}%)
                                   </div>
                                 )}
                               </div>
@@ -539,27 +542,29 @@ export default function ProcurementApp() {
                                   );
                                 })}
 
-                                {/* Totals row — only reflects items with both invoice $ and quoted $ */}
+                                {/* Totals row — matched columns reflect items with both invoice $ and quoted $ */}
                                 {(() => {
                                   const quotedT   = inv.quotedTotal;
-                                  const matchedT  = inv.matchedAmount; // invoiced amount for matched items only
-                                  const invoicedT = parseFloat(inv.total);
-                                  const varT    = quotedT > 0 && invoicedT >= 0 ? matchedT - quotedT : null;
+                                  const matchedT  = inv.matchedAmount; // invoiced $ for matched items only
+                                  const lineTotal = inv.lineItems.reduce((s, li) => s + (parseFloat(li.amount) || 0), 0);
+                                  const varT    = quotedT > 0 ? matchedT - quotedT : null;
                                   const varTpct = varT !== null ? (varT / quotedT * 100) : null;
+                                  const varSign = varT > 0 ? '+' : varT < 0 ? '−' : '';
+                                  const pctSign = varTpct > 0 ? '+' : varTpct < 0 ? '−' : '';
                                   return (
                                     <tr className="border-t-2 border-gray-200 bg-gray-100/60 font-semibold">
                                       <td colSpan={6} className="pt-2 pb-1.5 text-xs text-gray-500 uppercase tracking-wide">Totals</td>
-                                      <td className="pt-2 pb-1.5 text-right text-xs text-gray-400">—</td>
+                                      <td className="pt-2 pb-1.5 text-right text-gray-600 text-xs">{matchedT > 0 ? fmt$(matchedT) : '—'}</td>
                                       <td className="pt-2 pb-1.5 text-right text-gray-600 text-xs">{quotedT > 0 ? fmt$(quotedT) : '—'}</td>
                                       <td className={`pt-2 pb-1.5 text-right text-xs font-bold ${varT > 0.01 ? 'text-red-600' : varT !== null && varT < -0.01 ? 'text-green-600' : 'text-gray-400'}`}>
                                         {varT !== null ? (
                                           <div>
-                                            <div>{varT > 0 ? '+' : ''}{fmt$(varT)}</div>
-                                            <div className="opacity-70 font-normal">({varTpct > 0 ? '+' : ''}{varTpct.toFixed(1)}%)</div>
+                                            <div>{varSign}{fmt$(varT)}</div>
+                                            <div className="opacity-70 font-normal">({pctSign}{Math.abs(varTpct).toFixed(1)}%)</div>
                                           </div>
                                         ) : '—'}
                                       </td>
-                                      <td className="pt-2 pb-1.5 text-right text-gray-900">{fmt$(invoicedT)}</td>
+                                      <td className="pt-2 pb-1.5 text-right text-gray-900">{fmt$(lineTotal)}</td>
                                     </tr>
                                   );
                                 })()}
