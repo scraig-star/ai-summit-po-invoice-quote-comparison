@@ -1056,6 +1056,8 @@ export default function ProcurementApp() {
     const [expanded, setExpanded]           = useState(new Set());
     const [myPos, setMyPos]                 = useState(null);
     const [expandedVendors, setExpandedVendors] = useState(new Set());
+    const [resultCollapsed, setResultCollapsed] = useState(false);
+    const resultRef = useRef(null);
 
     const toggle       = (k) => setExpanded(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
     const toggleVendor = (k) => setExpandedVendors(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
@@ -1081,6 +1083,9 @@ export default function ProcurementApp() {
         const r = await fetch(`${cloudConfig.apiEndpoint}/api/po-analysis/${encodeURIComponent(po)}`);
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
         setResult(await r.json());
+        setExpanded(new Set(['po', 'jde-inv', 'medius']));
+        setResultCollapsed(false);
+        requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
       } catch (e) {
         setError(e.message);
       } finally {
@@ -1242,15 +1247,21 @@ export default function ProcurementApp() {
         )}
 
         {result && (
-          <>
+          <div ref={resultRef} className="space-y-5 scroll-mt-4">
             {/* Summary table */}
             <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+              <button
+                onClick={() => setResultCollapsed(c => !c)}
+                className="w-full px-5 py-3 border-b border-gray-100 flex items-center justify-between hover:bg-gray-50 text-left">
                 <div>
                   <div className="text-sm font-semibold text-gray-700">PO # {result.poNumber}</div>
                   <div className="text-xs text-gray-400 mt-0.5">Open PO = (Approved + Pending PO) − (Billed in JDE + Pending in Medius)</div>
                 </div>
-              </div>
+                {resultCollapsed
+                  ? <ChevronRight className="w-4 h-4 text-gray-400" />
+                  : <ChevronDown className="w-4 h-4 text-gray-400" />}
+              </button>
+              {!resultCollapsed && (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
@@ -1294,9 +1305,11 @@ export default function ProcurementApp() {
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
 
             {/* Breakdown sections */}
+            {!resultCollapsed && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
               {/* JDE PO Lines */}
               <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
@@ -1390,7 +1403,8 @@ export default function ProcurementApp() {
                 )}
               </div>
             </div>
-          </>
+            )}
+          </div>
         )}
       </div>
     );
