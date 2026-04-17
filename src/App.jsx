@@ -1121,7 +1121,179 @@ export default function ProcurementApp() {
       );
     };
 
-    const t = result?.totals;
+    // Whether the active result corresponds to a PO in the user's My POs list.
+    // If so, render the analysis inline under that PO row; otherwise at the bottom.
+    const inMyPos = !!(result && myPos?.vendors?.some(v => v.pos.some(p => p.poNumber === result.poNumber)));
+
+    const renderAnalysis = (res, { inline = false } = {}) => {
+      const t = res.totals;
+      const wrapClass = inline
+        ? 'space-y-5 px-5 py-5 bg-gray-50/40 border-t border-gray-100'
+        : 'space-y-5 scroll-mt-4';
+      const showBody = inline || !resultCollapsed;
+      return (
+        <div ref={resultRef} className={wrapClass}>
+          <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+            {!inline && (
+              <button
+                onClick={() => setResultCollapsed(c => !c)}
+                className="w-full px-5 py-3 border-b border-gray-100 flex items-center justify-between hover:bg-gray-50 text-left">
+                <div>
+                  <div className="text-sm font-semibold text-gray-700">PO # {res.poNumber}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">Open PO = (Approved + Pending PO) − (Billed in JDE + Pending in Medius)</div>
+                </div>
+                {resultCollapsed
+                  ? <ChevronRight className="w-4 h-4 text-gray-400" />
+                  : <ChevronDown className="w-4 h-4 text-gray-400" />}
+              </button>
+            )}
+            {inline && (
+              <div className="px-5 py-2 border-b border-gray-100 text-xs text-gray-400">
+                Open PO = (Approved + Pending PO) − (Billed in JDE + Pending in Medius)
+              </div>
+            )}
+            {showBody && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th className="text-left px-5 py-3 font-medium"></th>
+                      <th className="text-right px-5 py-3 font-medium">PO Amount</th>
+                      <th className="text-right px-5 py-3 font-medium">Total Billed</th>
+                      <th className="text-right px-5 py-3 font-medium">Pending in Medius</th>
+                      <th className="text-right px-5 py-3 font-medium">Open PO Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    <tr>
+                      <td className="px-5 py-3 text-gray-700">Total Approved PO Value</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.approvedPOValue > 0 ? fmt$(t.approvedPOValue) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.totalBilledJDE > 0 ? fmt$(t.totalBilledJDE) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                    </tr>
+                    <tr>
+                      <td className="px-5 py-3 text-gray-700">Total Pending PO Value</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.pendingPOValue > 0 ? fmt$(t.pendingPOValue) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right">{signed$(t.pendingPOValue)}</td>
+                    </tr>
+                    <tr>
+                      <td className="px-5 py-3 text-gray-700">Invoices Pending in Medius</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.pendingInvoicesMedius > 0 ? fmt$(t.pendingInvoicesMedius) : '—'}</td>
+                      <td className="px-5 py-3 text-right">{signed$(-t.pendingInvoicesMedius)}</td>
+                    </tr>
+                    <tr className="bg-gray-50 font-semibold">
+                      <td className="px-5 py-3 text-gray-800">Grand Total</td>
+                      <td className="px-5 py-3 text-right text-gray-900">{t.grandCommitment > 0 ? fmt$(t.grandCommitment) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-900">{t.totalBilledJDE > 0 ? fmt$(t.totalBilledJDE) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-900">{t.pendingInvoicesMedius > 0 ? fmt$(t.pendingInvoicesMedius) : '—'}</td>
+                      <td className="px-5 py-3 text-right">{signed$(t.openPOAmount)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {showBody && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+                <button onClick={() => toggle('po')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
+                  <div className="text-left">
+                    <div className="text-sm font-semibold text-gray-700">JDE PO Lines</div>
+                    <div className="text-xs text-gray-400">{res.breakdown.poLines.length} lines</div>
+                  </div>
+                  {expanded.has('po') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </button>
+                {expanded.has('po') && (
+                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    {res.breakdown.poLines.length === 0 ? (
+                      <div className="px-5 py-4 text-xs text-gray-400">No lines returned.</div>
+                    ) : res.breakdown.poLines.map((l, i) => (
+                      <div key={i} className="px-5 py-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">Line {l.lineNumber}</span>
+                          <span className="text-gray-800">{fmt$(l.amount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-gray-400 truncate">{l.description || '—'}</span>
+                          <span className={`ml-2 inline-flex px-2 py-0.5 rounded border text-[10px] uppercase tracking-wide ${
+                            l.bucket === 'approved' ? 'bg-green-50 text-green-700 border-green-200'
+                            : l.bucket === 'pending' ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-gray-50 text-gray-500 border-gray-200'
+                          }`}>
+                            {l.lastStatus} · {l.bucket}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+                <button onClick={() => toggle('jde-inv')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
+                  <div className="text-left">
+                    <div className="text-sm font-semibold text-gray-700">Billed in JDE</div>
+                    <div className="text-xs text-gray-400">{res.breakdown.jdeInvoices.length} invoices</div>
+                  </div>
+                  {expanded.has('jde-inv') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </button>
+                {expanded.has('jde-inv') && (
+                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    {res.breakdown.jdeInvoices.length === 0 ? (
+                      <div className="px-5 py-4 text-xs text-gray-400">No posted JDE invoices.</div>
+                    ) : res.breakdown.jdeInvoices.map((inv, i) => (
+                      <div key={i} className="px-5 py-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">{inv.invoiceNumber}</span>
+                          <span className="text-gray-800">{fmt$(inv.grossAmount)}</span>
+                        </div>
+                        <div className="text-gray-400 mt-1">{fmtDate(inv.invoiceDate)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+                <button onClick={() => toggle('medius')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
+                  <div className="text-left">
+                    <div className="text-sm font-semibold text-gray-700">Pending in Medius</div>
+                    <div className="text-xs text-gray-400">{res.breakdown.mediusInvoices.length} invoices</div>
+                  </div>
+                  {expanded.has('medius') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </button>
+                {expanded.has('medius') && (
+                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    {res.breakdown.mediusInvoices.length === 0 ? (
+                      <div className="px-5 py-4 text-xs text-gray-400">No pending Medius invoices for this PO.</div>
+                    ) : res.breakdown.mediusInvoices.map((m, i) => (
+                      <div key={i} className="px-5 py-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">{m.invoiceNumber || m.msgId}</span>
+                          <span className="text-gray-800">{fmt$(m.total)}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-gray-400">Supplier {m.supplierId || '—'} · {fmtDate(m.invoiceDate)}</span>
+                          <span className="inline-flex px-2 py-0.5 rounded border text-[10px] uppercase tracking-wide bg-amber-50 text-amber-700 border-amber-200">
+                            {m.stage?.replace(/^Preliminary/, '').replace(/After/, '') || 'pending'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
 
     return (
       <div className="space-y-5">
@@ -1224,19 +1396,36 @@ export default function ProcurementApp() {
                     </button>
                     {open && (
                       <div className="bg-gray-50/50 divide-y divide-gray-100">
-                        {v.pos.map(p => (
-                          <button
-                            key={p.poNumber}
-                            onClick={() => runAnalysis(p.poNumber)}
-                            disabled={loading}
-                            className="w-full flex items-center justify-between px-5 py-2.5 pl-12 hover:bg-white text-left disabled:opacity-50 transition-colors">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-[#084C7C]">{p.poNumber}</div>
-                              <div className="text-xs text-gray-400 truncate">Job {p.jobNumber} · {p.description}</div>
+                        {v.pos.map(p => {
+                          const isActive   = result?.poNumber === p.poNumber;
+                          const isExpanded = isActive && !resultCollapsed;
+                          const isLoading  = loading && poInput === p.poNumber;
+                          return (
+                            <div key={p.poNumber}>
+                              <button
+                                onClick={() => {
+                                  if (isActive) setResultCollapsed(c => !c);
+                                  else runAnalysis(p.poNumber);
+                                }}
+                                disabled={loading && !isActive}
+                                className="w-full flex items-center justify-between px-5 py-2.5 pl-12 hover:bg-white text-left disabled:opacity-50 transition-colors">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {isLoading
+                                    ? <Loader className="w-4 h-4 animate-spin text-gray-400 flex-shrink-0" />
+                                    : (isExpanded
+                                        ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                        : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />)}
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-medium text-[#084C7C]">{p.poNumber}</div>
+                                    <div className="text-xs text-gray-400 truncate">Job {p.jobNumber} · {p.description}</div>
+                                  </div>
+                                </div>
+                                <div className="text-sm text-gray-600">{fmt$(p.amount)}</div>
+                              </button>
+                              {isExpanded && renderAnalysis(result, { inline: true })}
                             </div>
-                            <div className="text-sm text-gray-600">{fmt$(p.amount)}</div>
-                          </button>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1246,166 +1435,7 @@ export default function ProcurementApp() {
           </div>
         )}
 
-        {result && (
-          <div ref={resultRef} className="space-y-5 scroll-mt-4">
-            {/* Summary table */}
-            <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-              <button
-                onClick={() => setResultCollapsed(c => !c)}
-                className="w-full px-5 py-3 border-b border-gray-100 flex items-center justify-between hover:bg-gray-50 text-left">
-                <div>
-                  <div className="text-sm font-semibold text-gray-700">PO # {result.poNumber}</div>
-                  <div className="text-xs text-gray-400 mt-0.5">Open PO = (Approved + Pending PO) − (Billed in JDE + Pending in Medius)</div>
-                </div>
-                {resultCollapsed
-                  ? <ChevronRight className="w-4 h-4 text-gray-400" />
-                  : <ChevronDown className="w-4 h-4 text-gray-400" />}
-              </button>
-              {!resultCollapsed && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
-                    <tr>
-                      <th className="text-left px-5 py-3 font-medium"></th>
-                      <th className="text-right px-5 py-3 font-medium">PO Amount</th>
-                      <th className="text-right px-5 py-3 font-medium">Total Billed</th>
-                      <th className="text-right px-5 py-3 font-medium">Pending in Medius</th>
-                      <th className="text-right px-5 py-3 font-medium">Open PO Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    <tr>
-                      <td className="px-5 py-3 text-gray-700">Total Approved PO Value</td>
-                      <td className="px-5 py-3 text-right text-gray-800">{t.approvedPOValue > 0 ? fmt$(t.approvedPOValue) : '—'}</td>
-                      <td className="px-5 py-3 text-right text-gray-800">{t.totalBilledJDE > 0 ? fmt$(t.totalBilledJDE) : '—'}</td>
-                      <td className="px-5 py-3 text-right text-gray-400">—</td>
-                      <td className="px-5 py-3 text-right text-gray-400">—</td>
-                    </tr>
-                    <tr>
-                      <td className="px-5 py-3 text-gray-700">Total Pending PO Value</td>
-                      <td className="px-5 py-3 text-right text-gray-800">{t.pendingPOValue > 0 ? fmt$(t.pendingPOValue) : '—'}</td>
-                      <td className="px-5 py-3 text-right text-gray-400">—</td>
-                      <td className="px-5 py-3 text-right text-gray-400">—</td>
-                      <td className="px-5 py-3 text-right">{signed$(t.pendingPOValue)}</td>
-                    </tr>
-                    <tr>
-                      <td className="px-5 py-3 text-gray-700">Invoices Pending in Medius</td>
-                      <td className="px-5 py-3 text-right text-gray-400">—</td>
-                      <td className="px-5 py-3 text-right text-gray-400">—</td>
-                      <td className="px-5 py-3 text-right text-gray-800">{t.pendingInvoicesMedius > 0 ? fmt$(t.pendingInvoicesMedius) : '—'}</td>
-                      <td className="px-5 py-3 text-right">{signed$(-t.pendingInvoicesMedius)}</td>
-                    </tr>
-                    <tr className="bg-gray-50 font-semibold">
-                      <td className="px-5 py-3 text-gray-800">Grand Total</td>
-                      <td className="px-5 py-3 text-right text-gray-900">{t.grandCommitment > 0 ? fmt$(t.grandCommitment) : '—'}</td>
-                      <td className="px-5 py-3 text-right text-gray-900">{t.totalBilledJDE > 0 ? fmt$(t.totalBilledJDE) : '—'}</td>
-                      <td className="px-5 py-3 text-right text-gray-900">{t.pendingInvoicesMedius > 0 ? fmt$(t.pendingInvoicesMedius) : '—'}</td>
-                      <td className="px-5 py-3 text-right">{signed$(t.openPOAmount)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              )}
-            </div>
-
-            {/* Breakdown sections */}
-            {!resultCollapsed && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-              {/* JDE PO Lines */}
-              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
-                <button onClick={() => toggle('po')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
-                  <div className="text-left">
-                    <div className="text-sm font-semibold text-gray-700">JDE PO Lines</div>
-                    <div className="text-xs text-gray-400">{result.breakdown.poLines.length} lines</div>
-                  </div>
-                  {expanded.has('po') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
-                </button>
-                {expanded.has('po') && (
-                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
-                    {result.breakdown.poLines.length === 0 ? (
-                      <div className="px-5 py-4 text-xs text-gray-400">No lines returned.</div>
-                    ) : result.breakdown.poLines.map((l, i) => (
-                      <div key={i} className="px-5 py-3 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-gray-700">Line {l.lineNumber}</span>
-                          <span className="text-gray-800">{fmt$(l.amount)}</span>
-                        </div>
-                        <div className="flex items-center justify-between mt-1">
-                          <span className="text-gray-400 truncate">{l.description || '—'}</span>
-                          <span className={`ml-2 inline-flex px-2 py-0.5 rounded border text-[10px] uppercase tracking-wide ${
-                            l.bucket === 'approved' ? 'bg-green-50 text-green-700 border-green-200'
-                            : l.bucket === 'pending' ? 'bg-amber-50 text-amber-700 border-amber-200'
-                            : 'bg-gray-50 text-gray-500 border-gray-200'
-                          }`}>
-                            {l.lastStatus} · {l.bucket}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* JDE Invoices */}
-              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
-                <button onClick={() => toggle('jde-inv')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
-                  <div className="text-left">
-                    <div className="text-sm font-semibold text-gray-700">Billed in JDE</div>
-                    <div className="text-xs text-gray-400">{result.breakdown.jdeInvoices.length} invoices</div>
-                  </div>
-                  {expanded.has('jde-inv') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
-                </button>
-                {expanded.has('jde-inv') && (
-                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
-                    {result.breakdown.jdeInvoices.length === 0 ? (
-                      <div className="px-5 py-4 text-xs text-gray-400">No posted JDE invoices.</div>
-                    ) : result.breakdown.jdeInvoices.map((inv, i) => (
-                      <div key={i} className="px-5 py-3 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-gray-700">{inv.invoiceNumber}</span>
-                          <span className="text-gray-800">{fmt$(inv.grossAmount)}</span>
-                        </div>
-                        <div className="text-gray-400 mt-1">{fmtDate(inv.invoiceDate)}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Medius Pending */}
-              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
-                <button onClick={() => toggle('medius')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
-                  <div className="text-left">
-                    <div className="text-sm font-semibold text-gray-700">Pending in Medius</div>
-                    <div className="text-xs text-gray-400">{result.breakdown.mediusInvoices.length} invoices</div>
-                  </div>
-                  {expanded.has('medius') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
-                </button>
-                {expanded.has('medius') && (
-                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
-                    {result.breakdown.mediusInvoices.length === 0 ? (
-                      <div className="px-5 py-4 text-xs text-gray-400">No pending Medius invoices for this PO.</div>
-                    ) : result.breakdown.mediusInvoices.map((m, i) => (
-                      <div key={i} className="px-5 py-3 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-gray-700">{m.invoiceNumber || m.msgId}</span>
-                          <span className="text-gray-800">{fmt$(m.total)}</span>
-                        </div>
-                        <div className="flex items-center justify-between mt-1">
-                          <span className="text-gray-400">Supplier {m.supplierId || '—'} · {fmtDate(m.invoiceDate)}</span>
-                          <span className="inline-flex px-2 py-0.5 rounded border text-[10px] uppercase tracking-wide bg-amber-50 text-amber-700 border-amber-200">
-                            {m.stage?.replace(/^Preliminary/, '').replace(/After/, '') || 'pending'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            )}
-          </div>
-        )}
+        {result && !inMyPos && renderAnalysis(result, { inline: false })}
       </div>
     );
   };
