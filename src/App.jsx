@@ -5,7 +5,7 @@ import {
   Search, ChevronDown, ChevronRight, DollarSign, Package,
   ClipboardList, BarChart3, X, Clock, Cloud, Database,
   Settings, CheckCircle2, XCircle, Loader, CloudUpload, FolderOpen,
-  Filter, RefreshCw
+  Filter, RefreshCw, Calculator
 } from 'lucide-react';
 
 const NAVY = '#084C7C'; // ACCO brand blue
@@ -1046,12 +1046,261 @@ export default function ProcurementApp() {
     );
   };
 
+  // ── PO Analysis / Reconciliation tab ─────────────────────────────────────────
+  const POAnalysisTab = () => {
+    const [poInput, setPoInput]   = useState('');
+    const [result, setResult]     = useState(null);
+    const [loading, setLoading]   = useState(false);
+    const [error, setError]       = useState(null);
+    const [expanded, setExpanded] = useState(new Set());
+
+    const toggle = (k) => setExpanded(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
+
+    const runAnalysis = async () => {
+      const po = normalizePONumber(poInput.trim());
+      if (!po) return;
+      setLoading(true); setError(null); setResult(null);
+      try {
+        const r = await fetch(`${cloudConfig.apiEndpoint}/api/po-analysis/${encodeURIComponent(po)}`);
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        setResult(await r.json());
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Signed currency with parentheses for negatives, red for negative values
+    const signed$ = (v) => {
+      const n = parseFloat(v) || 0;
+      if (n === 0) return '—';
+      if (n < 0) return <span className="text-red-600 font-medium">({fmt$(n)})</span>;
+      return fmt$(n);
+    };
+
+    const sourceChip = (label, state) => {
+      const s = {
+        live:  'bg-green-50 text-green-700 border-green-200',
+        mock:  'bg-amber-50 text-amber-700 border-amber-200',
+        error: 'bg-red-50 text-red-700 border-red-200',
+      }[state] || 'bg-gray-50 text-gray-500 border-gray-200';
+      return (
+        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded border ${s}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${state === 'live' ? 'bg-green-500' : state === 'mock' ? 'bg-amber-500' : 'bg-red-500'}`} />
+          {label}: {state}
+        </span>
+      );
+    };
+
+    const t = result?.totals;
+
+    return (
+      <div className="space-y-5">
+        {/* Input row */}
+        <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <Calculator className="w-4 h-4 text-gray-400" />
+            <span className="text-sm font-semibold text-gray-700">PO Analysis & Reconciliation</span>
+            <span className="text-xs text-gray-400 ml-2">Combines JDE commitments, JDE invoices, and Medius pending invoices.</span>
+          </div>
+          <div className="flex items-end gap-3">
+            <div className="flex-1 max-w-sm">
+              <label className="block text-xs font-medium text-gray-500 mb-1">Purchase Order #</label>
+              <input
+                type="text"
+                placeholder="e.g. 229902-058"
+                value={poInput}
+                onChange={e => setPoInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && runAnalysis()}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:border-transparent"
+                style={{ '--tw-ring-color': `${NAVY}30` }}
+              />
+            </div>
+            <button
+              onClick={runAnalysis}
+              disabled={loading || !poInput.trim()}
+              className="flex items-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
+              style={{ backgroundColor: NAVY }}>
+              {loading ? <Loader className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              {loading ? 'Analyzing…' : 'Analyze'}
+            </button>
+            {result?.sources && (
+              <div className="flex items-center gap-2 ml-auto">
+                {sourceChip('JDE', result.sources.jde)}
+                {sourceChip('Medius', result.sources.medius)}
+              </div>
+            )}
+          </div>
+          {error && (
+            <div className="mt-3 text-xs px-3 py-2 rounded-lg bg-red-50 text-red-600">
+              Failed to analyze PO: {error}
+            </div>
+          )}
+        </div>
+
+        {result && (
+          <>
+            {/* Summary table */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-700">PO # {result.poNumber}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">Open PO = (Approved + Pending PO) − (Billed in JDE + Pending in Medius)</div>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th className="text-left px-5 py-3 font-medium"></th>
+                      <th className="text-right px-5 py-3 font-medium">PO Amount</th>
+                      <th className="text-right px-5 py-3 font-medium">Total Billed</th>
+                      <th className="text-right px-5 py-3 font-medium">Pending in Medius</th>
+                      <th className="text-right px-5 py-3 font-medium">Open PO Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    <tr>
+                      <td className="px-5 py-3 text-gray-700">Total Approved PO Value</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.approvedPOValue > 0 ? fmt$(t.approvedPOValue) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.totalBilledJDE > 0 ? fmt$(t.totalBilledJDE) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                    </tr>
+                    <tr>
+                      <td className="px-5 py-3 text-gray-700">Total Pending PO Value</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.pendingPOValue > 0 ? fmt$(t.pendingPOValue) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right">{signed$(t.pendingPOValue)}</td>
+                    </tr>
+                    <tr>
+                      <td className="px-5 py-3 text-gray-700">Invoices Pending in Medius</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-400">—</td>
+                      <td className="px-5 py-3 text-right text-gray-800">{t.pendingInvoicesMedius > 0 ? fmt$(t.pendingInvoicesMedius) : '—'}</td>
+                      <td className="px-5 py-3 text-right">{signed$(-t.pendingInvoicesMedius)}</td>
+                    </tr>
+                    <tr className="bg-gray-50 font-semibold">
+                      <td className="px-5 py-3 text-gray-800">Grand Total</td>
+                      <td className="px-5 py-3 text-right text-gray-900">{t.grandCommitment > 0 ? fmt$(t.grandCommitment) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-900">{t.totalBilledJDE > 0 ? fmt$(t.totalBilledJDE) : '—'}</td>
+                      <td className="px-5 py-3 text-right text-gray-900">{t.pendingInvoicesMedius > 0 ? fmt$(t.pendingInvoicesMedius) : '—'}</td>
+                      <td className="px-5 py-3 text-right">{signed$(t.openPOAmount)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Breakdown sections */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              {/* JDE PO Lines */}
+              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+                <button onClick={() => toggle('po')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
+                  <div className="text-left">
+                    <div className="text-sm font-semibold text-gray-700">JDE PO Lines</div>
+                    <div className="text-xs text-gray-400">{result.breakdown.poLines.length} lines</div>
+                  </div>
+                  {expanded.has('po') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </button>
+                {expanded.has('po') && (
+                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    {result.breakdown.poLines.length === 0 ? (
+                      <div className="px-5 py-4 text-xs text-gray-400">No lines returned.</div>
+                    ) : result.breakdown.poLines.map((l, i) => (
+                      <div key={i} className="px-5 py-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">Line {l.lineNumber}</span>
+                          <span className="text-gray-800">{fmt$(l.amount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-gray-400 truncate">{l.description || '—'}</span>
+                          <span className={`ml-2 inline-flex px-2 py-0.5 rounded border text-[10px] uppercase tracking-wide ${
+                            l.bucket === 'approved' ? 'bg-green-50 text-green-700 border-green-200'
+                            : l.bucket === 'pending' ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-gray-50 text-gray-500 border-gray-200'
+                          }`}>
+                            {l.lastStatus} · {l.bucket}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* JDE Invoices */}
+              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+                <button onClick={() => toggle('jde-inv')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
+                  <div className="text-left">
+                    <div className="text-sm font-semibold text-gray-700">Billed in JDE</div>
+                    <div className="text-xs text-gray-400">{result.breakdown.jdeInvoices.length} invoices</div>
+                  </div>
+                  {expanded.has('jde-inv') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </button>
+                {expanded.has('jde-inv') && (
+                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    {result.breakdown.jdeInvoices.length === 0 ? (
+                      <div className="px-5 py-4 text-xs text-gray-400">No posted JDE invoices.</div>
+                    ) : result.breakdown.jdeInvoices.map((inv, i) => (
+                      <div key={i} className="px-5 py-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">{inv.invoiceNumber}</span>
+                          <span className="text-gray-800">{fmt$(inv.grossAmount)}</span>
+                        </div>
+                        <div className="text-gray-400 mt-1">{fmtDate(inv.invoiceDate)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Medius Pending */}
+              <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+                <button onClick={() => toggle('medius')} className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 hover:bg-gray-50">
+                  <div className="text-left">
+                    <div className="text-sm font-semibold text-gray-700">Pending in Medius</div>
+                    <div className="text-xs text-gray-400">{result.breakdown.mediusInvoices.length} invoices</div>
+                  </div>
+                  {expanded.has('medius') ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </button>
+                {expanded.has('medius') && (
+                  <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                    {result.breakdown.mediusInvoices.length === 0 ? (
+                      <div className="px-5 py-4 text-xs text-gray-400">No pending Medius invoices for this PO.</div>
+                    ) : result.breakdown.mediusInvoices.map((m, i) => (
+                      <div key={i} className="px-5 py-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">{m.invoiceNumber || m.msgId}</span>
+                          <span className="text-gray-800">{fmt$(m.total)}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-gray-400">Supplier {m.supplierId || '—'} · {fmtDate(m.invoiceDate)}</span>
+                          <span className="inline-flex px-2 py-0.5 rounded border text-[10px] uppercase tracking-wide bg-amber-50 text-amber-700 border-amber-200">
+                            {m.stage?.replace(/^Preliminary/, '').replace(/After/, '') || 'pending'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────────
   const tabs = [
-    { id: 'po-overview', label: 'PO Overview',     icon: ClipboardList },
-    { id: 'comparison',  label: 'Quote vs Invoice', icon: TrendingUp    },
-    { id: 'catalog',     label: 'Item Catalog',     icon: Package       },
-    { id: 'upload',      label: 'Upload Documents', icon: CloudUpload   },
+    { id: 'po-overview',  label: 'PO Overview',      icon: ClipboardList },
+    { id: 'comparison',   label: 'Quote vs Invoice', icon: TrendingUp    },
+    { id: 'catalog',      label: 'Item Catalog',     icon: Package       },
+    { id: 'po-analysis',  label: 'PO Analysis',      icon: Calculator    },
+    { id: 'upload',       label: 'Upload Documents', icon: CloudUpload   },
   ];
 
   return (
@@ -1101,6 +1350,7 @@ export default function ProcurementApp() {
         {activeTab === 'po-overview' && <POOverview />}
         {activeTab === 'comparison'  && <ComparisonTab />}
         {activeTab === 'catalog'     && <ItemCatalogTab />}
+        {activeTab === 'po-analysis' && <POAnalysisTab />}
         {activeTab === 'upload'      && <UploadTab />}
       </main>
 

@@ -21,6 +21,32 @@ const DOCAI_PROCESSOR       = process.env.DOCAI_PROCESSOR_ID       || '';
 const DOCAI_QUOTE_PROCESSOR = process.env.DOCAI_QUOTE_PROCESSOR_ID || '98991256bdff5118';
 const DOCAI_LOCATION        = process.env.DOCAI_LOCATION            || 'us';
 
+// ── PO Analysis: Medius + JDE config ─────────────────────────────────────────
+const MEDIUS_BASE_URL      = (process.env.MEDIUS_BASE_URL || '').replace(/\/$/, '');
+const MEDIUS_CLIENT_ID     = process.env.MEDIUS_CLIENT_ID || '';
+const MEDIUS_CLIENT_SECRET = process.env.MEDIUS_CLIENT_SECRET || '';
+const MEDIUS_MOCK          = process.env.MEDIUS_MOCK === '1' || !MEDIUS_BASE_URL || !MEDIUS_CLIENT_ID;
+
+const JDE_BASE_URL  = (process.env.JDE_ORCHESTRATOR_URL || '').replace(/\/$/, '');
+const JDE_USER      = process.env.JDE_USER || '';
+const JDE_PASSWORD  = process.env.JDE_PASSWORD || '';
+const JDE_MOCK      = process.env.JDE_MOCK === '1' || !JDE_BASE_URL;
+
+// JDE status-to-bucket mapping (per user spec)
+const JDE_APPROVED_STATUSES = new Set(['440', '415', '999']);
+const JDE_PENDING_STATUSES  = new Set(['280', '285', '230']);
+
+// Medius workflow stages that count as "Pending Invoices" per user spec.
+// Path segments below the `/integration/message/v1/supplierinvoice/invoices/` base
+// follow the tag vocabulary seen in 55_MD_INSERT_INVOICE_DATA.xml. Confirm in Postman
+// against accoQA tenant before go-live.
+const MEDIUS_PENDING_STAGES = [
+  'PreliminaryAfterConnection',   // Connect
+  'PreliminaryAfterCoding',       // Analyze
+  'PreliminaryAfterApproval',     // Approve Invoice Amount
+  'PreliminaryAfterPostControl',  // Post Control
+];
+
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
@@ -783,6 +809,260 @@ app.get('/api/comparison', async (_req, res) => {
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PO Analysis helpers ──────────────────────────────────────────────────────
+function normalizePO(raw) {
+  if (!raw) return '';
+  const m = String(raw).trim().match(/^[A-Z.\s]+-?\s*(\d[\w-]*)$/i);
+  return (m ? m[1] : String(raw)).trim().toUpperCase();
+}
+
+function chunked(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+// Medius token cache (per-instance)
+let _mediusTokenCache = { value: null, expiresAt: 0 };
+async function getMediusToken() {
+  const now = Date.now();
+  if (_mediusTokenCache.value && now < _mediusTokenCache.expiresAt - 60_000) {
+    return _mediusTokenCache.value;
+  }
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    scope: 'Integration.Erp Integration.FileExport',
+    client_id: MEDIUS_CLIENT_ID,
+    client_secret: MEDIUS_CLIENT_SECRET,
+  });
+  const r = await fetch(`${MEDIUS_BASE_URL}/connect/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body,
+  });
+  if (!r.ok) throw new Error(`Medius token failed: ${r.status}`);
+  const j = await r.json();
+  _mediusTokenCache = {
+    value: j.access_token,
+    expiresAt: Date.now() + (j.expires_in || 3600) * 1000,
+  };
+  return _mediusTokenCache.value;
+}
+
+async function listMediusMsgIds(stage, token) {
+  // Matches 55_MD_Get_Msg_ID.xml: correlationKeyFilter=JDEE1;;;;;
+  const url = `${MEDIUS_BASE_URL}/integration/message/v1/supplierinvoice/invoices/${stage}?correlationKeyFilter=JDEE1;;;;;`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`Medius list ${stage} failed: ${r.status}`);
+  const j = await r.json();
+  // Shape per 55_MD_Msg_ID_Dataset.xml: array of { url: ".../{msgId}" }
+  const list = Array.isArray(j) ? j : (j.array || j.messages || j.items || []);
+  return list.map(m => {
+    const href = m.url || m.href || m.messageUrl || '';
+    return href.split('/').pop();
+  }).filter(Boolean);
+}
+
+async function getMediusInvoiceDetail(stage, msgId, token) {
+  const url = `${MEDIUS_BASE_URL}/integration/message/v1/supplierinvoice/invoices/${stage}/${msgId}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`Medius detail ${stage}/${msgId} failed: ${r.status}`);
+  return r.json();
+}
+
+async function fetchMediusPendingForPO(poNumber) {
+  const token = await getMediusToken();
+  const target = normalizePO(poNumber);
+  const results = [];
+  for (const stage of MEDIUS_PENDING_STAGES) {
+    let ids = [];
+    try { ids = await listMediusMsgIds(stage, token); }
+    catch (e) { console.warn(`Medius listMsgIds ${stage}:`, e.message); continue; }
+
+    for (const chunk of chunked(ids, 5)) {
+      const detailed = await Promise.all(
+        chunk.map(id => getMediusInvoiceDetail(stage, id, token).catch(err => {
+          console.warn(`Medius detail ${stage}/${id}:`, err.message);
+          return null;
+        }))
+      );
+      for (const msg of detailed) {
+        if (!msg) continue;
+        const inv = msg.invoice || {};
+        const poLines = Array.isArray(inv.poLines) ? inv.poLines : [];
+        if (!poLines.some(pl => normalizePO(pl.purchaseOrderNumber) === target)) continue;
+        results.push({
+          msgId:         msg.messageId || msg.id || null,
+          stage,
+          invoiceNumber: inv.invoiceNumber || null,
+          supplierId:    inv.supplierId    || null,
+          total:         parseFloat(inv.totalAmount || 0),
+          invoiceDate:   inv.invoiceDate   || null,
+          poLines: poLines
+            .filter(pl => normalizePO(pl.purchaseOrderNumber) === target)
+            .map(pl => ({
+              po:     pl.purchaseOrderNumber,
+              line:   pl.purchaseOrderLineNumber,
+              amount: (parseFloat(pl.unitPrice || 0) * parseFloat(pl.quantity || 0)) || 0,
+            })),
+        });
+      }
+    }
+  }
+  return results;
+}
+
+async function callJdeOrchestration(name, body) {
+  const url = `${JDE_BASE_URL}/${name}`;
+  const auth = Buffer.from(`${JDE_USER}:${JDE_PASSWORD}`).toString('base64');
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Basic ${auth}`,
+    },
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok) throw new Error(`JDE ${name} failed: ${r.status}`);
+  return r.json();
+}
+
+async function fetchJdePOLines(poNumber) {
+  // Expected orchestration: PO_Inquiry_By_PO
+  // Response: { lines: [ { lineNumber, description, lastStatus, originalOrderedAmount } ] }
+  const j = await callJdeOrchestration('PO_Inquiry_By_PO', { poNumber });
+  const lines = Array.isArray(j.lines) ? j.lines : (Array.isArray(j) ? j : []);
+  return lines.map(l => ({
+    lineNumber:  l.lineNumber,
+    description: l.description || '',
+    lastStatus:  String(l.lastStatus || '').trim(),
+    amount:      parseFloat(l.originalOrderedAmount || l.amount || 0),
+  }));
+}
+
+async function fetchJdePOInvoices(poNumber) {
+  // Expected orchestration: Supplier_Inquiry_By_PO
+  // Response: { invoices: [ { invoiceNumber, invoiceDate, grossAmount } ] }
+  const j = await callJdeOrchestration('Supplier_Inquiry_By_PO', { poNumber });
+  const invoices = Array.isArray(j.invoices) ? j.invoices : (Array.isArray(j) ? j : []);
+  return invoices.map(i => ({
+    invoiceNumber: i.invoiceNumber,
+    invoiceDate:   i.invoiceDate,
+    grossAmount:   parseFloat(i.grossAmount || i.amount || 0),
+  }));
+}
+
+// Deterministic mocks keyed off PO# so the UI is demo-able before integrations exist.
+function mockJde(poNumber) {
+  return {
+    lines: [
+      { lineNumber: 1, description: 'Approved PO line',           lastStatus: '440', amount: 1000 },
+      { lineNumber: 2, description: 'Pending change-order line',  lastStatus: '280', amount:  200 },
+    ],
+    invoices: [
+      { invoiceNumber: `${poNumber}-INV-001`, invoiceDate: '2026-03-15', grossAmount: 1000 },
+    ],
+  };
+}
+
+function mockMedius(poNumber) {
+  return [
+    {
+      msgId: 'mock-1', stage: 'PreliminaryAfterCoding',
+      invoiceNumber: 'MED-A-001', supplierId: '12345',
+      total: 800, invoiceDate: '2026-04-02',
+      poLines: [{ po: poNumber, line: 1, amount: 800 }],
+    },
+    {
+      msgId: 'mock-2', stage: 'PreliminaryAfterApproval',
+      invoiceNumber: 'MED-A-002', supplierId: '12345',
+      total: 500, invoiceDate: '2026-04-10',
+      poLines: [{ po: poNumber, line: 2, amount: 500 }],
+    },
+  ];
+}
+
+function bucketJdeLines(lines) {
+  let approved = 0, pending = 0;
+  const enriched = lines.map(l => {
+    const bucket = JDE_APPROVED_STATUSES.has(l.lastStatus) ? 'approved'
+                 : JDE_PENDING_STATUSES.has(l.lastStatus)  ? 'pending'
+                 : 'other';
+    if (bucket === 'approved') approved += l.amount;
+    else if (bucket === 'pending') pending += l.amount;
+    return { ...l, bucket };
+  });
+  return { approved, pending, lines: enriched };
+}
+
+app.get('/api/po-analysis/:poNumber', async (req, res) => {
+  const poNumber = normalizePO(req.params.poNumber);
+  if (!poNumber) return res.status(400).json({ error: 'poNumber required' });
+
+  const sources = { jde: 'live', medius: 'live' };
+
+  // JDE: lines + invoices (run in parallel with Medius below)
+  const jdePromise = (async () => {
+    if (JDE_MOCK) { sources.jde = 'mock'; const m = mockJde(poNumber); return { lines: m.lines, invoices: m.invoices }; }
+    try {
+      const [lines, invoices] = await Promise.all([
+        fetchJdePOLines(poNumber),
+        fetchJdePOInvoices(poNumber),
+      ]);
+      return { lines, invoices };
+    } catch (e) {
+      console.warn('JDE fetch failed:', e.message);
+      sources.jde = 'error';
+      return { lines: [], invoices: [] };
+    }
+  })();
+
+  const mediusPromise = (async () => {
+    if (MEDIUS_MOCK) { sources.medius = 'mock'; return mockMedius(poNumber); }
+    try {
+      return await fetchMediusPendingForPO(poNumber);
+    } catch (e) {
+      console.warn('Medius fetch failed:', e.message);
+      sources.medius = 'error';
+      return [];
+    }
+  })();
+
+  try {
+    const [jde, medius] = await Promise.all([jdePromise, mediusPromise]);
+    const bucketed = bucketJdeLines(jde.lines);
+
+    const approvedPOValue       = bucketed.approved;
+    const pendingPOValue        = bucketed.pending;
+    const totalBilledJDE        = jde.invoices.reduce((s, i) => s + i.grossAmount, 0);
+    const pendingInvoicesMedius = medius.reduce((s, m) => s + m.total, 0);
+    const grandCommitment       = approvedPOValue + pendingPOValue;
+    const openPOAmount          = grandCommitment - totalBilledJDE - pendingInvoicesMedius;
+
+    res.json({
+      poNumber,
+      totals: {
+        approvedPOValue,
+        pendingPOValue,
+        totalBilledJDE,
+        pendingInvoicesMedius,
+        grandCommitment,
+        openPOAmount,
+      },
+      breakdown: {
+        poLines:        bucketed.lines,
+        jdeInvoices:    jde.invoices,
+        mediusInvoices: medius,
+      },
+      sources,
+    });
+  } catch (e) {
+    console.error('po-analysis failed:', e);
+    res.status(500).json({ error: e.message });
   }
 });
 

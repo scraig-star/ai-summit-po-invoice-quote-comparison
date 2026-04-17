@@ -57,6 +57,8 @@ jobs:
             DB_USER=procurement_admin
             DOCAI_LOCATION=us
             DOCAI_QUOTE_PROCESSOR_ID=98991256bdff5118
+            JDE_MOCK=1
+            MEDIUS_MOCK=1
           secrets: |
             DB_PASSWORD=procurement-db-password:latest
             DOCAI_PROCESSOR_ID=docai-processor-id:latest
