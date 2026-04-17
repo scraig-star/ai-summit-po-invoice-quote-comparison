@@ -999,6 +999,50 @@ function bucketJdeLines(lines) {
   return { approved, pending, lines: enriched };
 }
 
+// Mock PM → vendor → POs roll-up. Returned as-is until a JDE orchestration
+// (e.g. `PM_PO_List`) exists that filters F4301 by Buyer and groups by vendor.
+const MOCK_MY_POS = {
+  pm: { code: 'AK', name: 'Alex Kowalski' },
+  vendors: [
+    {
+      vendorNumber: 'F1001',
+      vendorName:   'Ferguson Enterprises',
+      pos: [
+        { poNumber: '229902-058', jobNumber: '60140018', description: 'Plumbing rough-in — Building A', amount: 52300 },
+        { poNumber: '230751-019', jobNumber: '60140018', description: 'Fixtures & trim',                 amount: 18200 },
+        { poNumber: '231402-002', jobNumber: '60140022', description: 'Water heaters',                    amount:  9650 },
+      ],
+    },
+    {
+      vendorNumber: 'G2055',
+      vendorName:   'Grainger Industrial',
+      pos: [
+        { poNumber: '231004-012', jobNumber: '60140022', description: 'Motor controls & VFDs', amount: 8700 },
+      ],
+    },
+    {
+      vendorNumber: 'J3421',
+      vendorName:   'Johnstone Supply',
+      pos: [
+        { poNumber: '229988-003', jobNumber: '60140018', description: 'HVAC coils',   amount: 14500 },
+        { poNumber: '230155-007', jobNumber: '60140019', description: 'Thermostats', amount:  3200 },
+      ],
+    },
+    {
+      vendorNumber: 'H4810',
+      vendorName:   'Hajoca Corporation',
+      pos: [
+        { poNumber: '230889-041', jobNumber: '60140019', description: 'Copper fittings',        amount: 6400 },
+        { poNumber: '231188-008', jobNumber: '60140022', description: 'Valves & backflow prev', amount: 4120 },
+      ],
+    },
+  ],
+};
+
+app.get('/api/po-analysis/my-pos', (_req, res) => {
+  res.json(MOCK_MY_POS);
+});
+
 app.get('/api/po-analysis/:poNumber', async (req, res) => {
   const poNumber = normalizePO(req.params.poNumber);
   if (!poNumber) return res.status(400).json({ error: 'poNumber required' });

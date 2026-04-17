@@ -1048,17 +1048,34 @@ export default function ProcurementApp() {
 
   // ── PO Analysis / Reconciliation tab ─────────────────────────────────────────
   const POAnalysisTab = () => {
-    const [poInput, setPoInput]   = useState('');
-    const [result, setResult]     = useState(null);
-    const [loading, setLoading]   = useState(false);
-    const [error, setError]       = useState(null);
-    const [expanded, setExpanded] = useState(new Set());
+    const [poInput, setPoInput]             = useState('');
+    const [vendorInput, setVendorInput]     = useState('');
+    const [result, setResult]               = useState(null);
+    const [loading, setLoading]             = useState(false);
+    const [error, setError]                 = useState(null);
+    const [expanded, setExpanded]           = useState(new Set());
+    const [myPos, setMyPos]                 = useState(null);
+    const [expandedVendors, setExpandedVendors] = useState(new Set());
 
-    const toggle = (k) => setExpanded(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
+    const toggle       = (k) => setExpanded(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
+    const toggleVendor = (k) => setExpandedVendors(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
 
-    const runAnalysis = async () => {
-      const po = normalizePONumber(poInput.trim());
+    useEffect(() => {
+      if (!cloudConfig.apiEndpoint?.trim()) return;
+      fetch(`${cloudConfig.apiEndpoint}/api/po-analysis/my-pos`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          setMyPos(d);
+          // Expand the first vendor by default so the list is visibly populated
+          if (d?.vendors?.length) setExpandedVendors(new Set([d.vendors[0].vendorNumber]));
+        })
+        .catch(() => {});
+    }, []);
+
+    const runAnalysis = async (overridePo) => {
+      const po = normalizePONumber((overridePo ?? poInput).trim());
       if (!po) return;
+      setPoInput(po);
       setLoading(true); setError(null); setResult(null);
       try {
         const r = await fetch(`${cloudConfig.apiEndpoint}/api/po-analysis/${encodeURIComponent(po)}`);
@@ -1070,6 +1087,12 @@ export default function ProcurementApp() {
         setLoading(false);
       }
     };
+
+    // Client-side vendor filter: matches vendor # prefix OR vendor name substring
+    const vq = vendorInput.trim().toLowerCase();
+    const filteredVendors = !myPos ? [] : myPos.vendors.filter(v =>
+      !vq || v.vendorNumber.toLowerCase().includes(vq) || v.vendorName.toLowerCase().includes(vq)
+    );
 
     // Signed currency with parentheses for negatives, red for negative values
     const signed$ = (v) => {
@@ -1103,9 +1126,14 @@ export default function ProcurementApp() {
             <Calculator className="w-4 h-4 text-gray-400" />
             <span className="text-sm font-semibold text-gray-700">PO Analysis & Reconciliation</span>
             <span className="text-xs text-gray-400 ml-2">Combines JDE commitments, JDE invoices, and Medius pending invoices.</span>
+            {myPos?.pm && (
+              <span className="ml-auto text-xs text-gray-400">
+                PM: <span className="font-medium text-gray-600">{myPos.pm.name} ({myPos.pm.code})</span>
+              </span>
+            )}
           </div>
-          <div className="flex items-end gap-3">
-            <div className="flex-1 max-w-sm">
+          <div className="flex items-end gap-3 flex-wrap">
+            <div className="flex-1 min-w-[180px] max-w-sm">
               <label className="block text-xs font-medium text-gray-500 mb-1">Purchase Order #</label>
               <input
                 type="text"
@@ -1117,8 +1145,19 @@ export default function ProcurementApp() {
                 style={{ '--tw-ring-color': `${NAVY}30` }}
               />
             </div>
+            <div className="flex-1 min-w-[180px] max-w-sm">
+              <label className="block text-xs font-medium text-gray-500 mb-1">Vendor # or Name</label>
+              <input
+                type="text"
+                placeholder="e.g. F1001 or Ferguson"
+                value={vendorInput}
+                onChange={e => setVendorInput(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:border-transparent"
+                style={{ '--tw-ring-color': `${NAVY}30` }}
+              />
+            </div>
             <button
-              onClick={runAnalysis}
+              onClick={() => runAnalysis()}
               disabled={loading || !poInput.trim()}
               className="flex items-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
               style={{ backgroundColor: NAVY }}>
@@ -1138,6 +1177,69 @@ export default function ProcurementApp() {
             </div>
           )}
         </div>
+
+        {/* My POs — grouped by vendor */}
+        {myPos && (
+          <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-700">My POs</div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {filteredVendors.length} vendor{filteredVendors.length === 1 ? '' : 's'}
+                  {' · '}
+                  {filteredVendors.reduce((s, v) => s + v.pos.length, 0)} PO{filteredVendors.reduce((s, v) => s + v.pos.length, 0) === 1 ? '' : 's'}
+                  {vq && ' (filtered)'}
+                </div>
+              </div>
+              {vendorInput && (
+                <button onClick={() => setVendorInput('')} className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1">
+                  <X className="w-3 h-3" /> Clear filter
+                </button>
+              )}
+            </div>
+            <div className="divide-y divide-gray-100">
+              {filteredVendors.length === 0 ? (
+                <div className="px-5 py-4 text-xs text-gray-400">No vendors match this filter.</div>
+              ) : filteredVendors.map(v => {
+                const open      = expandedVendors.has(v.vendorNumber);
+                const vendorTot = v.pos.reduce((s, p) => s + (p.amount || 0), 0);
+                return (
+                  <div key={v.vendorNumber}>
+                    <button
+                      onClick={() => toggleVendor(v.vendorNumber)}
+                      className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 text-left">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {open ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-gray-700 truncate">{v.vendorName}</div>
+                          <div className="text-xs text-gray-400">#{v.vendorNumber} · {v.pos.length} PO{v.pos.length === 1 ? '' : 's'}</div>
+                        </div>
+                      </div>
+                      <div className="text-sm text-gray-600 font-medium">{fmt$(vendorTot)}</div>
+                    </button>
+                    {open && (
+                      <div className="bg-gray-50/50 divide-y divide-gray-100">
+                        {v.pos.map(p => (
+                          <button
+                            key={p.poNumber}
+                            onClick={() => runAnalysis(p.poNumber)}
+                            disabled={loading}
+                            className="w-full flex items-center justify-between px-5 py-2.5 pl-12 hover:bg-white text-left disabled:opacity-50 transition-colors">
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-[#084C7C]">{p.poNumber}</div>
+                              <div className="text-xs text-gray-400 truncate">Job {p.jobNumber} · {p.description}</div>
+                            </div>
+                            <div className="text-sm text-gray-600">{fmt$(p.amount)}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {result && (
           <>
