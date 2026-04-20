@@ -958,10 +958,14 @@ async function fetchJdePOInvoices(poNumber) {
 
 // Deterministic mocks keyed off PO# so the UI is demo-able before integrations exist.
 function mockJde(poNumber) {
+  const hit = MOCK_MY_POS.vendors.flatMap(v => v.pos).find(p => p.poNumber === poNumber);
+  const amount   = hit?.amount ?? 1200;
+  const pending  = Math.round(amount * 0.1);
+  const approved = amount - pending;
   return {
     lines: [
-      { lineNumber: 1, description: 'Approved PO line',           lastStatus: '440', amount: 1000 },
-      { lineNumber: 2, description: 'Pending change-order line',  lastStatus: '280', amount:  200 },
+      { lineNumber: 1, description: 'Approved PO line',          lastStatus: '440', amount: approved },
+      { lineNumber: 2, description: 'Pending change-order line', lastStatus: '280', amount: pending  },
     ],
     invoices: [
       { invoiceNumber: `${poNumber}-INV-001`, invoiceDate: '2026-03-15', grossAmount: 1000 },
